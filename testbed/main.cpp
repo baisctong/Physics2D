@@ -1,0 +1,486 @@
+// physics2d_testbed - interactive testbed entry point (Week 1 D5/D6).
+//
+// Responsibilities (and nothing else):
+//   1. Create the GLFW window / OpenGL 3.3 core context and initialise Dear ImGui
+//      (docking branch) with the GLFW + OpenGL3 backends.
+//   2. Run the frame loop: poll input -> draw UI -> run fixed physics steps ->
+//      render world and UI -> swap.
+//   3. Own the World, the demo registry and the camera; demos only see those.
+//
+// Fixed timestep: p2::StepAccumulator turns the variable frame time into a whole
+// number of 1/60 s steps (Section 4.3), at most kMaxStepsPerFrame per frame to stop
+// the "death spiral" where a slow frame schedules even more work. The leftover
+// fraction is available as interpolation alpha but Week 1 does not use it yet: the
+// design document schedules render interpolation for Week 7, and demos would need
+// previous-state caching that does not exist until then.
+//
+// CLI:
+//   --smoke N   render N frames, print a machine-checkable summary, exit 0.
+//               In smoke mode the loop feeds the accumulator a deterministic
+//               1/60 s per frame, so N frames == N physics steps regardless of
+//               machine speed. Exit code 2 means "no usable GL environment".
+//   --hidden    create the window with GLFW_VISIBLE=false (used by smoke runs).
+//   --help      print usage.
+
+#include "Camera.h"
+#include "DebugUI.h"
+#include "GLLoader.h"
+#include "Renderer.h"
+#include "demos/FallingBall.h"
+
+#include "physics2d/Core/Settings.h"
+#include "physics2d/Core/TimeStep.h"
+#include "physics2d/Core/World.h"
+
+#include <GLFW/glfw3.h>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
+
+#include <chrono>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace {
+
+constexpr int kExitSuccess = 0;
+constexpr int kExitFailure = 1;
+// Environment-unsupported is distinct from a failing test: the smoke harness uses
+// it to say "this machine has no desktop/OpenGL 3.3", which is not a code bug.
+constexpr int kExitEnvironmentUnsupported = 2;
+
+constexpr int kInitialWindowWidth = 1280;
+constexpr int kInitialWindowHeight = 800;
+constexpr const char* kWindowTitle = "Physics2D Testbed";
+// GLSL 330 core matches the requested OpenGL 3.3 core context.
+constexpr const char* kGlslVersion = "#version 330 core";
+
+struct CommandLineOptions {
+    int smokeFrames = 0; // 0 means interactive mode
+    bool hidden = false;
+    bool helpRequested = false;
+};
+
+// The binary name is spelled out instead of using argv[0]: the repository path may
+// contain non-ASCII characters, and printing argv[0] to a GBK/UTF-8 mixed console
+// turns the usage line into mojibake.
+void PrintUsage() {
+    std::printf("Usage: physics2d_testbed [--smoke N] [--hidden] [--help]\n"
+                "  --smoke N   render N frames, print a summary and exit (0 = pass, 2 = no GL environment)\n"
+                "  --hidden    hide the window (rendering still happens)\n"
+                "  --help      show this help\n");
+}
+
+[[nodiscard]] bool ParseCommandLine(int argc, char** argv, CommandLineOptions& options) {
+    for (int argumentIndex = 1; argumentIndex < argc; ++argumentIndex) {
+        const char* argument = argv[argumentIndex];
+        if (std::strcmp(argument, "--hidden") == 0) {
+            options.hidden = true;
+        } else if (std::strcmp(argument, "--smoke") == 0) {
+            if (argumentIndex + 1 >= argc) {
+                std::fprintf(stderr, "[testbed] --smoke requires a frame count, e.g. --smoke 120\n");
+                return false;
+            }
+            const char* value = argv[++argumentIndex];
+            char* parseEnd = nullptr;
+            const long frames = std::strtol(value, &parseEnd, 10);
+            if (parseEnd == value || *parseEnd != '\0' || frames <= 0 || frames > 1000000) {
+                std::fprintf(stderr, "[testbed] invalid --smoke frame count: '%s'\n", value);
+                return false;
+            }
+            options.smokeFrames = static_cast<int>(frames);
+        } else if (std::strcmp(argument, "--help") == 0 || std::strcmp(argument, "-h") == 0) {
+            options.helpRequested = true;
+            return true;
+        } else {
+            std::fprintf(stderr, "[testbed] unknown argument: '%s'\n", argument);
+            return false;
+        }
+    }
+    return true;
+}
+
+void GlfwErrorCallback(int errorCode, const char* description) {
+    std::fprintf(stderr, "[testbed] GLFW error %d: %s\n", errorCode,
+                 description != nullptr ? description : "(no description)");
+}
+
+// --- RAII wrappers ------------------------------------------------------------
+// Startup can fail at several points; these wrappers guarantee the matching
+// teardown runs in the reverse order (Renderer -> ImGui -> GLFW window -> GLFW),
+// which is the order ImGui and OpenGL require.
+
+class GlfwRuntime {
+  public:
+    GlfwRuntime() = default;
+    ~GlfwRuntime() {
+        if (m_initialized) {
+            glfwTerminate();
+        }
+    }
+    GlfwRuntime(const GlfwRuntime&) = delete;
+    GlfwRuntime& operator=(const GlfwRuntime&) = delete;
+
+    [[nodiscard]] bool Initialize() {
+        m_initialized = glfwInit() == GLFW_TRUE;
+        return m_initialized;
+    }
+
+  private:
+    bool m_initialized = false;
+};
+
+class GlfwWindow {
+  public:
+    GlfwWindow() = default;
+    ~GlfwWindow() {
+        if (m_window != nullptr) {
+            glfwDestroyWindow(m_window);
+        }
+    }
+    GlfwWindow(const GlfwWindow&) = delete;
+    GlfwWindow& operator=(const GlfwWindow&) = delete;
+
+    [[nodiscard]] GLFWwindow* Get() const noexcept { return m_window; }
+    void Set(GLFWwindow* window) noexcept { m_window = window; }
+
+  private:
+    GLFWwindow* m_window = nullptr;
+};
+
+class ImGuiRuntime {
+  public:
+    ImGuiRuntime() = default;
+    ~ImGuiRuntime() {
+        if (m_openGlBackendInitialized) {
+            ImGui_ImplOpenGL3_Shutdown();
+        }
+        if (m_glfwBackendInitialized) {
+            ImGui_ImplGlfw_Shutdown();
+        }
+        if (m_contextCreated) {
+            ImGui::DestroyContext();
+        }
+    }
+    ImGuiRuntime(const ImGuiRuntime&) = delete;
+    ImGuiRuntime& operator=(const ImGuiRuntime&) = delete;
+
+    [[nodiscard]] bool Initialize(GLFWwindow* window, std::string& error) {
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        m_contextCreated = true;
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        // No persistent imgui.ini in Week 1: the layout is deliberately basic and
+        // the smoke test must not create files in the working directory.
+        io.IniFilename = nullptr;
+        ImGui::StyleColorsDark();
+
+        if (!ImGui_ImplGlfw_InitForOpenGL(window, true)) {
+            error = "ImGui_ImplGlfw_InitForOpenGL returned false";
+            return false;
+        }
+        m_glfwBackendInitialized = true;
+        if (!ImGui_ImplOpenGL3_Init(kGlslVersion)) {
+            error = "ImGui_ImplOpenGL3_Init returned false";
+            return false;
+        }
+        m_openGlBackendInitialized = true;
+        return true;
+    }
+
+  private:
+    bool m_contextCreated = false;
+    bool m_glfwBackendInitialized = false;
+    bool m_openGlBackendInitialized = false;
+};
+
+int RunTestbed(const CommandLineOptions& options) {
+    const bool smokeMode = options.smokeFrames > 0;
+    const int environmentExitCode = smokeMode ? kExitEnvironmentUnsupported : kExitFailure;
+
+    glfwSetErrorCallback(&GlfwErrorCallback);
+    GlfwRuntime glfwRuntime;
+    if (!glfwRuntime.Initialize()) {
+        std::fprintf(stderr, "[testbed] glfwInit() failed\n");
+        return environmentExitCode;
+    }
+    std::printf("[testbed] GLFW %s\n", glfwGetVersionString());
+
+    // OpenGL 3.3 core. macOS additionally requires the forward-compatible hint or
+    // window creation returns null (Week 1 warning in the design document).
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#if defined(__APPLE__)
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+#endif
+    if (options.hidden) {
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    }
+
+    GlfwWindow windowGuard;
+    windowGuard.Set(
+        glfwCreateWindow(kInitialWindowWidth, kInitialWindowHeight, kWindowTitle, nullptr, nullptr));
+    if (windowGuard.Get() == nullptr) {
+        const char* description = nullptr;
+        const int errorCode = glfwGetError(&description);
+        std::fprintf(stderr, "[testbed] failed to create an OpenGL 3.3 core window (GLFW error %d: %s)\n",
+                     errorCode, description != nullptr ? description : "no description");
+        std::fprintf(
+            stderr,
+            "[testbed] no usable desktop session or OpenGL 3.3 driver is available in this environment\n");
+        return environmentExitCode;
+    }
+    GLFWwindow* window = windowGuard.Get();
+    glfwMakeContextCurrent(window);
+    // VSync for the interactive view; off for smoke runs so average frame time
+    // measures rendering instead of waiting for the monitor.
+    glfwSwapInterval(smokeMode ? 0 : 1);
+
+    const GLubyte* glVersionString = glGetString(GL_VERSION);
+    const GLubyte* glRendererString = glGetString(GL_RENDERER);
+    std::printf("[testbed] OpenGL %s (%s)\n",
+                glVersionString != nullptr ? reinterpret_cast<const char*>(glVersionString) : "unknown",
+                glRendererString != nullptr ? reinterpret_cast<const char*>(glRendererString) : "unknown");
+
+    // Camera input callbacks must exist before the ImGui backend installs its own
+    // callbacks: the backend chains pre-existing callbacks (see Camera.h).
+    p2::Camera camera;
+    camera.SetViewportSize(kInitialWindowWidth, kInitialWindowHeight);
+    camera.InstallInputCallbacks(window);
+
+    ImGuiRuntime imguiRuntime;
+    std::string startupError;
+    if (!imguiRuntime.Initialize(window, startupError)) {
+        std::fprintf(stderr, "[testbed] Dear ImGui initialization failed: %s\n", startupError.c_str());
+        return environmentExitCode;
+    }
+
+    p2::Renderer renderer;
+    if (!renderer.Initialize(startupError)) {
+        std::fprintf(stderr, "[testbed] renderer initialization failed: %s\n", startupError.c_str());
+        // A missing core entry point means the driver did not really provide 3.3;
+        // anything else (shader compile/link) is a real failure of our code.
+        const bool environmentIssue = startupError.rfind("required OpenGL 3.3 entry point", 0) == 0;
+        return (smokeMode && environmentIssue) ? kExitEnvironmentUnsupported : kExitFailure;
+    }
+
+    // ---- demo registry ------------------------------------------------------
+    // Week 1 ships exactly one scene; the container and iteration are the shape
+    // the later weeks' scene list uses, so adding SphereStack/Dominoes is one line.
+    std::vector<std::unique_ptr<p2::Demo>> demos;
+    demos.push_back(std::make_unique<p2::FallingBallDemo>());
+    std::vector<const char*> demoNames;
+    demoNames.reserve(demos.size());
+    for (const std::unique_ptr<p2::Demo>& demo : demos) {
+        demoNames.push_back(demo->Name());
+    }
+    int selectedDemo = 0;
+
+    p2::World world;
+    demos[static_cast<std::size_t>(selectedDemo)]->Setup(world);
+
+    p2::StepAccumulator accumulator(p2::kFixedTimeStep, p2::kMaxStepsPerFrame);
+    p2::DebugUI debugUi;
+    p2::DebugUI::DisplayOptions displayOptions;
+
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point previousFrameTime = Clock::now();
+    float smoothedFrameMilliseconds = 0.0f;
+    float smoothedStepMilliseconds = 0.0f;
+    int32_t physicsStepsLastFrame = 0;
+    int frameIndex = 0;
+    int32_t totalPhysicsSteps = 0;
+    double totalFrameMilliseconds = 0.0;
+
+    for (;;) {
+        if (smokeMode && frameIndex >= options.smokeFrames) {
+            break;
+        }
+
+        const Clock::time_point frameStart = Clock::now();
+        const float frameMilliseconds =
+            std::chrono::duration<float, std::milli>(frameStart - previousFrameTime).count();
+        previousFrameTime = frameStart;
+
+        glfwPollEvents();
+        if (glfwWindowShouldClose(window) != GLFW_FALSE) {
+            break;
+        }
+        if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) != 0) {
+            // A minimized window has a zero-sized framebuffer: the viewport math
+            // would divide by zero and ImGui warns about a 0x0 display. Wait for
+            // the next event instead of spinning through broken frames.
+            glfwWaitEventsTimeout(0.05);
+            previousFrameTime = Clock::now();
+            continue;
+        }
+
+        // ---- UI --------------------------------------------------------------
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+        // Full-viewport dockspace; the central node is transparent so the world
+        // render below shows through it while the panels dock at the edges.
+        ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+
+        const ImGuiIO& io = ImGui::GetIO();
+        camera.UpdateInput(window, !io.WantCaptureMouse && !io.WantCaptureKeyboard);
+
+        int windowWidth = kInitialWindowWidth;
+        int windowHeight = kInitialWindowHeight;
+        glfwGetWindowSize(window, &windowWidth, &windowHeight);
+        camera.SetViewportSize(windowWidth, windowHeight);
+
+        p2::DebugUI::FrameStats stats;
+        stats.framesPerSecond = smoothedFrameMilliseconds > 0.0f ? 1000.0f / smoothedFrameMilliseconds : 0.0f;
+        stats.frameMilliseconds = smoothedFrameMilliseconds;
+        stats.physicsStepMilliseconds = smoothedStepMilliseconds;
+        stats.physicsSteps = physicsStepsLastFrame;
+
+        const p2::DebugUI::FrameActions actions =
+            debugUi.Draw(world, *demos[static_cast<std::size_t>(selectedDemo)], demoNames, selectedDemo,
+                         stats, displayOptions);
+        if (actions.quitRequested) {
+            break;
+        }
+        if (actions.demoChanged) {
+            // Switching scenes rebuilds the World from scratch: leftover bodies
+            // and accumulated time from the previous scene must not leak in.
+            world.Clear();
+            demos[static_cast<std::size_t>(selectedDemo)]->Setup(world);
+            accumulator.Reset();
+        }
+        if (actions.resetRequested) {
+            demos[static_cast<std::size_t>(selectedDemo)]->Reset(world);
+        }
+        // Re-bind after the actions: the combo box may have changed the selection,
+        // and stepping/rendering must use the new scene's demo object.
+        p2::Demo& currentDemo = *demos[static_cast<std::size_t>(selectedDemo)];
+
+        // ---- physics ---------------------------------------------------------
+        // In smoke mode every frame simulates exactly one fixed step, keeping the
+        // automated check deterministic: 120 frames always means 120 steps.
+        const float simulationFrameSeconds = smokeMode ? p2::kFixedTimeStep : frameMilliseconds * 0.001f;
+        int32_t stepsThisFrame = 0;
+        if (actions.singleStepRequested) {
+            stepsThisFrame = 1;
+        } else if (!debugUi.IsPaused()) {
+            // The speed multiplier scales accumulated simulated time, never the
+            // fixed dt itself: warm starting and determinism depend on dt being
+            // constant (Section 4.3).
+            stepsThisFrame = accumulator.Advance(simulationFrameSeconds * debugUi.GetSpeedMultiplier());
+        }
+
+        float stepMilliseconds = 0.0f;
+        if (stepsThisFrame > 0) {
+            const Clock::time_point stepStart = Clock::now();
+            for (int32_t stepIndex = 0; stepIndex < stepsThisFrame; ++stepIndex) {
+                world.Step(p2::kFixedTimeStep);
+            }
+            const Clock::time_point stepEnd = Clock::now();
+            stepMilliseconds = std::chrono::duration<float, std::milli>(stepEnd - stepStart).count() /
+                               static_cast<float>(stepsThisFrame);
+        }
+        totalPhysicsSteps += stepsThisFrame;
+        physicsStepsLastFrame = stepsThisFrame;
+
+        // Demos advance with simulated time, not wall-clock time: when paused the
+        // scene is frozen, and at 0.25x speed the visual animation slows down too.
+        if (stepsThisFrame > 0) {
+            currentDemo.Update(world, p2::kFixedTimeStep * static_cast<float>(stepsThisFrame));
+        }
+
+        // ---- render ----------------------------------------------------------
+        int frameBufferWidth = kInitialWindowWidth;
+        int frameBufferHeight = kInitialWindowHeight;
+        glfwGetFramebufferSize(window, &frameBufferWidth, &frameBufferHeight);
+        glViewport(0, 0, frameBufferWidth, frameBufferHeight);
+        glClearColor(0.08f, 0.09f, 0.11f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        renderer.Begin(camera);
+        currentDemo.Draw(renderer, world);
+        if (displayOptions.showAxes) {
+            renderer.DrawAxes(5.0f);
+        }
+        if (displayOptions.showAabb) {
+            // Week 1 bodies have no shapes, so Body::aabb is still the default
+            // empty box; drawing it would litter the origin with degenerate
+            // rectangles. The toggle is wired now so Week 2 onwards only needs the
+            // AABB computation, not a new UI path.
+            for (const p2::Body& body : world.GetBodies()) {
+                if (!body.handle.IsValid() || !world.IsValid(body.handle)) {
+                    continue;
+                }
+                if (body.aabb.GetWidth() <= 0.0f && body.aabb.GetHeight() <= 0.0f) {
+                    continue;
+                }
+                renderer.DrawAABB(body.aabb, p2::Color{0.45f, 0.75f, 0.45f, 0.6f});
+            }
+        }
+        renderer.End();
+
+        // UI is drawn after the world so panels overlay the scene; both share the
+        // same framebuffer, cleared once above.
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        glfwSwapBuffers(window);
+
+        smoothedFrameMilliseconds = smoothedFrameMilliseconds <= 0.0f
+                                        ? frameMilliseconds
+                                        : smoothedFrameMilliseconds * 0.9f + frameMilliseconds * 0.1f;
+        if (stepsThisFrame > 0) {
+            smoothedStepMilliseconds = smoothedStepMilliseconds <= 0.0f
+                                           ? stepMilliseconds
+                                           : smoothedStepMilliseconds * 0.9f + stepMilliseconds * 0.1f;
+        }
+
+        ++frameIndex;
+        totalFrameMilliseconds += static_cast<double>(frameMilliseconds);
+    }
+
+    if (smokeMode) {
+        const double averageFrameMilliseconds =
+            frameIndex > 0 ? totalFrameMilliseconds / static_cast<double>(frameIndex) : 0.0;
+        // One machine-readable line for the Lead's automated verification. The
+        // extra body-position line below is evidence that the integrator really ran
+        // (the first body should have fallen from its spawn height).
+        std::printf("[smoke] frames=%d physics_steps=%d bodies=%d avg_frame_ms=%.3f\n", frameIndex,
+                    totalPhysicsSteps, world.GetBodyCount(), averageFrameMilliseconds);
+        for (const p2::Body& body : world.GetBodies()) {
+            if (!body.handle.IsValid() || !world.IsValid(body.handle)) {
+                continue;
+            }
+            const p2::Vec2 position = world.GetPosition(body.handle);
+            std::printf("[smoke] first_body='%s' position=(%.3f, %.3f)\n", body.debugName.c_str(), position.x,
+                        position.y);
+            break;
+        }
+    } else if (frameIndex > 0) {
+        std::printf("[testbed] closed after %d frames, %d physics steps\n", frameIndex, totalPhysicsSteps);
+    }
+
+    return kExitSuccess;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    CommandLineOptions options;
+    if (!ParseCommandLine(argc, argv, options)) {
+        PrintUsage();
+        return kExitFailure;
+    }
+    if (options.helpRequested) {
+        PrintUsage();
+        return kExitSuccess;
+    }
+    return RunTestbed(options);
+}
