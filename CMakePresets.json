@@ -1,0 +1,129 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "displayName": "Base (Ninja, Debug configurable)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "PHYSICS2D_BUILD_TESTS": "ON",
+        "PHYSICS2D_BUILD_TESTBED": "ON",
+        "PHYSICS2D_BUILD_BENCH": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "displayName": "Debug - unit tests + testbed + bench",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "RelWithDebInfo - profiling grade optimised build",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "sanitize",
+      "inherits": "debug",
+      "displayName": "Debug + ASan/UBSan (no testbed)",
+      "cacheVariables": {
+        "PHYSICS2D_ENABLE_ASAN": "ON",
+        "PHYSICS2D_ENABLE_UBSAN": "ON",
+        "PHYSICS2D_BUILD_TESTBED": "OFF"
+      }
+    },
+    {
+      "name": "headless",
+      "inherits": "release",
+      "displayName": "Headless - core + tests only (CI regression)",
+      "cacheVariables": {
+        "PHYSICS2D_BUILD_TESTBED": "OFF",
+        "PHYSICS2D_HEADLESS_ONLY": "ON"
+      }
+    },
+    {
+      "name": "vs2022-base",
+      "hidden": true,
+      "displayName": "Base (Visual Studio 17 2022 generator)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": { "value": "x64", "strategy": "set" },
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "PHYSICS2D_BUILD_TESTS": "ON",
+        "PHYSICS2D_BUILD_TESTBED": "ON",
+        "PHYSICS2D_BUILD_BENCH": "ON"
+      }
+    },
+    {
+      "name": "vs2022-debug",
+      "inherits": "vs2022-base",
+      "displayName": "VS2022 Debug (fallback when Ninja is unavailable)"
+    },
+    {
+      "name": "vs2022-release",
+      "inherits": "vs2022-base",
+      "displayName": "VS2022 RelWithDebInfo"
+    },
+    {
+      "name": "vs2022-headless",
+      "inherits": "vs2022-base",
+      "displayName": "VS2022 headless (no testbed)",
+      "cacheVariables": { "PHYSICS2D_BUILD_TESTBED": "OFF" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "sanitize", "configurePreset": "sanitize" },
+    { "name": "headless", "configurePreset": "headless" },
+    { "name": "vs2022-debug", "configurePreset": "vs2022-debug", "configuration": "Debug" },
+    { "name": "vs2022-release", "configurePreset": "vs2022-release", "configuration": "RelWithDebInfo" },
+    { "name": "vs2022-headless", "configurePreset": "vs2022-headless", "configuration": "RelWithDebInfo" }
+  ],
+  "testPresets": [
+    {
+      "name": "all",
+      "displayName": "All tests (Debug)",
+      "configurePreset": "debug",
+      "output": { "outputOnFailure": true },
+      "execution": { "stopOnFailure": false }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": { "outputOnFailure": true },
+      "execution": { "stopOnFailure": false }
+    },
+    {
+      "name": "sanitize",
+      "configurePreset": "sanitize",
+      "output": { "outputOnFailure": true },
+      "execution": { "stopOnFailure": false }
+    },
+    {
+      "name": "headless",
+      "configurePreset": "headless",
+      "output": { "outputOnFailure": true },
+      "execution": { "stopOnFailure": false }
+    },
+    {
+      "name": "vs2022-debug",
+      "configurePreset": "vs2022-debug",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true },
+      "execution": { "stopOnFailure": false }
+    },
+    {
+      "name": "vs2022-release",
+      "configurePreset": "vs2022-release",
+      "configuration": "RelWithDebInfo",
+      "output": { "outputOnFailure": true },
+      "execution": { "stopOnFailure": false }
+    }
+  ]
+}

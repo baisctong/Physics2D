@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build + unit tests on both platforms, Debug and RelWithDebInfo.
+  # Dependencies are fetched by CMake FetchContent (see cmake/Dependencies.cmake).
+  # The testbed is compiled on both platforms but only run locally: GitHub
+  # runners have no usable OpenGL context, which is exactly why the core is
+  # renderer-free (Section 1.2 / R6 of the design document).
+  # ---------------------------------------------------------------------------
+  build-test:
+    name: ${{ matrix.os }} / ${{ matrix.preset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            preset: debug
+          - os: ubuntu-latest
+            preset: release
+          - os: windows-latest
+            preset: debug
+          - os: windows-latest
+            preset: release
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: lukka/get-cmake@latest
+
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Install OpenGL / X11 development packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgl1-mesa-dev xorg-dev
+
+      - name: Set up MSVC developer environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test
+        run: ctest --preset all --output-on-failure
+        if: matrix.preset == 'debug'
+
+      - name: Test (release)
+        run: ctest --preset release --output-on-failure
+        if: matrix.preset == 'release'
+
+  # ---------------------------------------------------------------------------
+  # ASan + UBSan. Linux only: MSVC has no UBSan, so the full sanitizer matrix
+  # exists where it is actually complete (Section 2.5).
+  # ---------------------------------------------------------------------------
+  sanitizers:
+    name: sanitizers (ASan + UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lukka/get-cmake@latest
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - name: Configure
+        run: cmake --preset sanitize
+      - name: Build
+        run: cmake --build --preset sanitize
+      - name: Test under ASan + UBSan
+        run: ctest --preset sanitize --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # Headless job: proves the physics core has no rendering dependency. Later it
+  # also runs the determinism regression tool (tests/regression, Week 6-7).
+  # ---------------------------------------------------------------------------
+  headless:
+    name: headless core (no render deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lukka/get-cmake@latest
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - name: Configure headless
+        run: cmake --preset headless
+      - name: Build headless
+        run: cmake --build --preset headless
+      - name: Test headless
+        run: ctest --preset headless --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # Layering guard (Section 1.2 "铁律"): physics2d_core must never include a
+  # rendering / windowing / UI header. Tracy is the single documented exception
+  # (Profiler.h, only under TRACY_ENABLE).
+  # ---------------------------------------------------------------------------
+  layering:
+    name: core layering guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Core must stay renderer-free
+        run: |
+          set -euo pipefail
+          echo "Scanning include/physics2d and src for forbidden includes..."
+          if grep -RInE '#include[[:space:]]*[<"](GLFW|glfw|imgui|GL/|OpenGL|SDL)' \
+                include/physics2d src; then
+            echo "::error::physics2d_core must not include rendering/UI headers (design doc Section 1.2)"
+            exit 1
+          fi
+          echo "Layering OK"

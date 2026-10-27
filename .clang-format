@@ -1,0 +1,22 @@
+# Project-wide formatting contract (Section 2.1 of the design doc).
+#
+# Based on LLVM with 4-space indentation and a 110 column limit. Keeping the
+# style file in the repo means every contributor (human or AI) produces the
+# same diff, which is what makes the optimisation commits reviewable.
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++20
+IndentWidth: 4
+ColumnLimit: 110
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BreakBeforeBraces: Attach
+PointerAlignment: Left
+ReferenceAlignment: Left
+NamespaceIndentation: None
+SortIncludes: true
+IncludeBlocks: Preserve
+FixNamespaceComments: true
+MaxEmptyLinesToKeep: 1
+SpaceAfterTemplateKeyword: false

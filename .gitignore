@@ -1,0 +1,36 @@
+# ---- build artifacts ----
+build/
+out/
+.cache/
+vcpkg_installed/
+_Deps/
+compile_commands.json
+
+# ---- IDE / editor ----
+.vs/
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.user
+*.suo
+*.sln.DotSettings.user
+
+# ---- local toolchain binaries are intentionally kept OUTSIDE the repo ----
+# scripts/bootstrap.ps1 installs helper binaries under %LOCALAPPDATA%\Physics2D\tools
+# (some sandboxed environments deny file writes to executables inside the workspace).
+
+# ---- third-party sources downloaded by FetchContent fallback ----
+third_party/_deps/
+
+# ---- local CMake user presets (machine specific) ----
+CMakeUserPresets.json
+
+# ---- misc ----
+*.log
+*.tmp
+*.png
+!docs/**/*.png
+!assets/**/*.png
+!assets/**/*.gif
+!docs/**/*.gif
