@@ -1,4 +1,4 @@
-# 架构说明（Week 1-3）
+# 架构说明（Week 1-4）
 
 > 本文描述**当前已实现**的架构，以及为 Week 2-8 预留的挂载点。
 > 公式推导见设计文档第 6 章与未来 `docs/math.md`；接口预留清单见 `docs/dev-interfaces.md`。
@@ -45,7 +45,7 @@ CI 的 `layering` job 用 grep 强制这条规则，headless job 则证明核心
 | --- | --- | --- |
 | `Math` | 值语义向量/旋转/变换/AABB、数学常量、FNV-1a hash | 任何物理语义、任何 I/O |
 | `Core` | World 生命周期、Step 流水线、Body/Shape 池、句柄/ID 池、固定步长、Settings、接触列表、可插拔宽相接口、Profiler 钩子 | SAT/裁剪（W4）、冲量求解（W3）、岛屿休眠（W7） |
-| `Collision` | 形状数据（Circle/Plane）、解析碰撞（圆-圆、圆-平面）、Manifold、ContactID、Contact 数据 | 冲量求解；多边形 SAT/裁剪（W4 加入） |
+| `Collision` | 形状数据（Circle/Plane/**Polygon**）、解析碰撞（圆族 + 圆-多边形 + 多边形-平面）、**SAT + 裁剪式 Manifold**、SATCache、ContactID、Contact 数据 | 冲量求解 |
 | `Solver` | **W3：法向 Sequential Impulse**（`ContactSolver`：K_n、累计冲量钳制、迭代、restitution bias）；W5 摩擦/warm starting/split impulse；W7 岛屿休眠与按岛求解 | 渲染、UI、宽相 |
 | `testbed` | 窗口/输入/渲染/ImGui/相机/Demo | 任何物理算法 |
 | `tests` | 单测（L1）+ 场景断言（L2） | 性能结论（bench 负责） |
@@ -120,13 +120,31 @@ flowchart LR
 - Week 2 的配对枚举仍是 **O(N²) + AABB 过滤**（`Body::aabb` 在 `Synchronize()` 里由形状算出），
   `UpdateBroadPhase()` 保持空实现；Week 6 只替换枚举来源（`IBroadPhase`），接触数据契约不变。
 
-## 4. World::Step 流水线（固定顺序，Week 1-3 已实现 7 个阶段）
+### 3.5 多边形与 SAT Manifold（Week 4）
+
+- `PolygonShape` 存 CCW 局部顶点（≤8）、每条边的单位外法线、面积质心；`SetPolygon` 严格校验
+  （重复/共线/凹/顺时针/非有限/面积≈0 一律返回 false，不静默修复）。`SetPolygonAsBox` 的顶点顺序
+  固定，保证 edge index（进而 ContactID）可复现。
+- `CollidePolygons`：对 A、B 两条多边形的所有边法线轴做投影（2D 只需边法线，不需要 3D 的叉积轴），
+  取分离最大（穿透最小）的轴；该轴所属面为 **reference face**，另一多边形上与其法线最反向的边为
+  **incident face**；用 `Clipping::ClipSegmentToLine` 做两次侧向裁剪 + 一次参考面裁剪，得到 0–2 个
+  接触点。法线严格 A→B，`flip` 只是"参考面是否属于 B"的元数据。
+- **SATCache**：当两个候选轴的分离值在相对容差内接近时，沿用上一帧的 reference face。
+  这只影响 manifold 的轴选择（进而 ContactID 的帧间稳定性），不改变物理结果；
+  `SolverSettings::useSatCache` 可关闭它做 D6 对比实验。
+- **ContactID 身份**：`Key() = referenceEdge | incidentVertex<<4 | type<<8`，**不包含 flip**。
+  同一物理接触在 A/B 交换时 Key 不变——这是 P07 D3/D5 的"交换后 Key 集合相同"要求，
+  也是 W5 warm starting 能跨帧匹配的前提。
+- 其余解析路径：圆-多边形（最近边/顶点 Voronoi 区域，P06）、多边形-平面（顶点深度，盒底两顶点
+  都贴地时返回 2 点，是 BoxStack 稳定支撑的关键）。
+
+## 4. World::Step 流水线（固定顺序，Week 1-4 已实现 7 个阶段）
 
 | # | 阶段 | Week 1-3 状态 | 预留方法 |
 | --- | --- | --- | --- |
 | 1 | 积分力 → 速度（semi-implicit） | ✅ 已实现 | `IntegrateForces` |
 | 2 | Broad Phase 更新 / 生成候选对 | ⬜ 预留 W6 | `UpdateBroadPhase` |
-| 3 | Narrow Phase → Contact/Manifold | ✅ W2：O(N²)+AABB 过滤 + 解析圆族 | `UpdateContacts` |
+| 3 | Narrow Phase → Contact/Manifold | ✅ W2 圆族 / W4 多边形 SAT+裁剪+解析路径 | `UpdateContacts` |
 | 4 | 岛屿构建（DFS） | ⬜ 预留 W7 | `BuildIslands` |
 | 4b | 求解器准备（每点 rA/rB、K_n、restitution bias） | ✅ W3 | `PrepareConstraints` |
 | 5 | Warm Start | 🟡 W3 空实现（W5 实装） | `WarmStart` |
@@ -170,13 +188,15 @@ Week 2 为了先跑通"球落在地面停住"实现了一个**故意错误**的�
 
 ## 5. 已冻结的公共接口
 
-Week 3 之后**不应再改签名**的接口（改动会波及后续 5 周与 testbed）：
+Week 4 之后**不应再改签名**的接口（改动会波及后续 4 周与 testbed）：
 
-- `World` 的全部 public 方法（生命周期、状态访问器、形状池、接触列表、`Step`、`SetGravity`、
-  `SetSolverSettings`、`SetBroadPhase`、统计、`CheckSane`、`Clear`）。
+- `World` 的全部 public 方法（生命周期、状态访问器、形状池含 `CreatePolygonShape`/`CreateBoxShape`、
+  接触列表、`Step`、`SetGravity`、`SetSolverSettings`、`SetBroadPhase`、统计、`CheckSane`、`Clear`）。
 - `BodyDef` / `Body` / `BodyType` / `Handle<T>` / `IDPool` / `StepAccumulator` / `SolverSettings`。
-- `Shape` / `ShapeType` / `MassData` / `CircleShape` / `PlaneShape`，以及
-  `CollideCircles` / `CollideCircleAndPlane` / `CollidePlaneAndCircle` / `FlipManifold`。
+- `Shape` / `ShapeType` / `MassData` / `CircleShape` / `PlaneShape` / `PolygonShape`，以及
+  `CollideCircles` / `CollideCircleAndPlane` / `CollidePlaneAndCircle` / `CollideCircleAndPolygon` /
+  `CollidePolygonAndCircle` / `CollidePolygonAndPlane` / `CollidePlaneAndPolygon` / `FlipManifold`。
+- `SAT` / `FindMaxSeparation` / `CollidePolygons` / `SATCache` / `ClipSegmentToLine`。
 - `IBroadPhase`、`ContactID`、`Manifold`、`ContactPoint`、`Contact`（字段可追加，
   但既有字段语义不变）。
 - `Solver/ContactSolver.h` 的 `ContactSolver` 接口与 `ContactConstraintPoint` 字段
@@ -184,8 +204,7 @@ Week 3 之后**不应再改签名**的接口（改动会波及后续 5 周与 te
 - `p2::Math` 全部函数签名。
 - `Settings.h` 常量名（只允许追加新常量）。
 
-新增能力优先**追加**：新字段追加到结构体尾部、新方法追加到 `World`、新阶段填已有预留方法
-（Week 4 的 `PolygonShape` 就追加为 `Shape::polygon` 成员 + `ShapeType::Polygon`）。
+新增能力优先**追加**：新字段追加到结构体尾部、新方法追加到 `World`、新阶段填已有预留方法。
 破坏性修改必须在 `docs/dev-interfaces.md` 的"偏差"一节登记理由。
 
 ## 6. 确定性（Determinism）
@@ -211,8 +230,8 @@ Week 3 之后**不应再改签名**的接口（改动会波及后续 5 周与 te
 
 | 层 | 内容 | 位置 |
 | --- | --- | --- |
-| L1 单测 | 数学库、形状质量/AABB、圆族解析碰撞、求解器数学（K_n/单次冲量/迭代收敛/restitution bias）、IDPool、accumulator、预留接口编译 | `tests/unit/` |
-| L2 组件 | 完整 Step 场景断言（坠落/钳制/销毁/形状附着/接触持久化/动量守恒/反弹高度/确定性） | `tests/unit/test_world_*.cpp` |
+| L1 单测 | 数学库、形状质量/AABB（圆/平面/多边形）、解析碰撞（圆族/圆-多边形/多边形-平面）、SAT+裁剪（位姿矩阵/ContactID 稳定性/cache）、求解器数学、IDPool、accumulator、预留接口编译 | `tests/unit/` |
+| L2 组件 | 完整 Step 场景断言（坠落/钳制/销毁/形状附着/接触持久化/动量守恒/反弹高度/多边形叠放/确定性） | `tests/unit/test_world_*.cpp` |
 | L3 回归 | 预留（`tests/regression/`，W6-W7） | — |
 
 `ctest --preset all` 通过 `gtest_discover_tests` 把每个 TEST 变成独立 ctest 用例。

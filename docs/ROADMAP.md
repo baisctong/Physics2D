@@ -66,7 +66,7 @@
 - 遗留技术债：`SolvePositionConstraints` 的位置推出（W5 split impulse）；O(N²) 配对（W6）；
   无摩擦/无 warm start/无 split impulse（W5）；多边形碰撞（W4）。
 
-## Week 4 · SAT + Manifold 生成
+## Week 4 · SAT + Manifold 生成 ✅
 
 | 日 | 任务 | DoD |
 | --- | --- | --- |
@@ -80,6 +80,18 @@
 
 要填：R5 SAT/裁剪、R16 Key 对称映射、R15 冷热拆分（W4 末）。
 
+**Week 4 验收结果（2026-10-28，tag `v0.4-sat`）**
+- `PolygonShape`（严格校验/质量积分/SetAsBox/AABB）、`SAT`（FindMaxSeparation + reference/incident +
+  裁剪式 manifold）、`Clipping`、`SATCache`、圆-多边形/多边形-平面解析路径全部落地；
+  `ContactID.Key()` 改为不含 flip（A/B 交换 Key 集合相同）。
+- World 接入 `CreatePolygonShape`/`CreateBoxShape` 与全形状组合窄相分派、SAT cache 跨帧持久化。
+- 数据：盒-地面 2 接触点、pen 5.000mm；方块 0°→90° 旋转 181 帧 Key 只变 2 次；双盒 40 迭代稳定
+  （gap=1.0000）；SAT cache 使 World 级 Key churn 4 vs 264（物理等价）。
+- **BoxStack W4 基线（如实记录）**：10 盒 @默认 8 迭代 collapse step≈138、最大穿透 0.1413m——
+  无摩擦 + 无 warm starting 时多层堆叠在物理上不稳定，这是 W5 `v0.5-stable-stack` 的 before 基线。
+- 测试 278（15 sandbox skip）；三 preset 全绿、0 警告。
+- 偏差：冷热拆分移到 W5 末（见 dev-interfaces 第 5 节）；`SetPolygon` 对近重复顶点是拒绝而非合并。
+
 ## Week 5 · 稳定堆叠（本项目最难的一周）
 
 | 日 | 任务 | DoD |
@@ -92,7 +104,7 @@
 | D6 | ImGui 参数面板 + Contact 面板 | 实时生效不崩 |
 | D7 | **里程碑**：10 方块堆叠 10s 稳定（穿透<0.01m）+ tag `v0.5-stable-stack` | 不达标停下查调试手册 |
 
-要填：R8 全部、R18 参数暴露、R17 插值（可选）。
+要填：R8 剩余（摩擦锥/warm start/split impulse）、R15 冷热拆分（W4 移到 W5 末）、R18 参数暴露。
 
 ## Week 6 · Broad Phase 替换与量化
 

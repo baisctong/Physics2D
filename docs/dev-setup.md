@@ -96,7 +96,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/format.ps1
 # 生成 compile_commands.json（clangd/VSCode 用）：configure 时已默认开启
 ```
 
-## 5. 测试台操作（Week 1-3）
+## 5. 测试台操作（Week 1-4）
 
 | 操作 | 按键 / 方式 |
 | --- | --- |
@@ -105,14 +105,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/format.ps1
 | 复位视角 | `R` |
 | 暂停 / 单步 | 左侧 ImGui 面板 |
 | 重力调节 | 左侧 ImGui 滑块（实时写回 `World::SetGravity`） |
-| 场景切换 | 左侧场景下拉框（`FallingBall` / `SphereStack`） |
-| 恢复系数（FallingBall） | 左侧场景面板的 restitution 滑块（实时 `World::SetRestitution`） |
+| 场景切换 | 左侧场景下拉框（`FallingBall` / `SphereStack` / `BoxStack`） |
+| 恢复系数（FallingBall） | 场景面板的 restitution 滑块（实时 `World::SetRestitution`） |
 | 显示接触点 / 法线 | 左侧 Display 开关（Contact points / Contact normals） |
-| 重新落下 / 重置叠放 | 左侧场景面板的按钮 |
+| 重新落下 / 重置叠放 | 场景面板按钮 |
 
-状态面板显示 shapes / contacts / 最大穿透（mm）、FPS、Step 耗时；`SphereStack` 场景面板还会
-显示每个球的位置/速度。Week 3 的求解器是**法向 Sequential Impulse**，restitution 由速度阈值
-控制（≥1 m/s 才弹）；摩擦/warm starting/split impulse 在 Week 5 加入。
+状态面板显示 shapes / contacts / 最大穿透（mm）、FPS、Step 耗时；`SphereStack`/`BoxStack`
+场景面板还会显示每个球/方块的位置、速度、倾斜角。Week 4 的求解器仍只有法向冲量
+（无摩擦、无 warm starting），所以 **BoxStack 的 10 层塔会塌**——这是 W4 的预期基线，
+Week 5 加摩擦 + warm starting 后会站立（`v0.5-stable-stack` 里程碑）。
 
 自动化冒烟测试（不依赖人眼看窗口）：
 
@@ -120,8 +121,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/format.ps1
 # 单球落地：150 帧后 contacts=1，球心 y≈0.495（半径 0.5，穿透 5.000 mm = kLinearSlop）
 .\build\debug\testbed\physics2d_testbed.exe --demo FallingBall --smoke 150 --hidden
 
-# 3 球叠放：300 帧后 bodies=4 contacts=3，三球 y≈0.494/1.488/2.482，残余速度 ≤0.019 m/s
+# 3 球叠放：300 帧后 bodies=4 contacts=3，三球站立
 .\build\debug\testbed\physics2d_testbed.exe --demo SphereStack --smoke 300 --hidden
+
+# 10 层方块塔（W4 初版）：300 帧后塌落为 ground-only 接触（预期；W5 修复）
+.\build\debug\testbed\physics2d_testbed.exe --demo BoxStack --smoke 300 --hidden
 ```
 
 `--demo` 名字大小写/分隔符不敏感；未知名字打印可用列表并以退出码 2 退出。

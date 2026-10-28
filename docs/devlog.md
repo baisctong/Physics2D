@@ -199,3 +199,81 @@
    考虑这一点，用契约（阈值内不弹、位移有界）而不是逐帧精确值。
 3. solver 的累计冲量已经每帧写回 `ContactPoint::normalImpulse` 但 W3 每帧又从 0 开始——
    W5 只需在 `Prepare` 读取继承值 + `WarmStart` 施加，其余公式不用动。
+
+---
+
+## Week 4 · SAT + 裁剪式 Manifold
+
+**完成**
+- **PolygonShape**（P04）：严格顶点校验（3–8 个、有限、相邻重复 < `kLinearSlop` 拒绝、共线冗余拒绝、
+  逆时针/凸/面积≈0 全部返回 false 并把形状置为 invalid）；规范 CCW 顶点顺序（`SetPolygonAsBox`
+  从 `(+hx,-hy)` 开始）、每条边单位外法线、面积质心；质量积分公式
+  `A / C / I_origin / I_c`（平行轴）；AABB。
+- **SAT + 裁剪**（P07）：`FindMaxSeparation`（遍历两边多边形所有边法线轴取最大分离）、
+  reference/incident face 选择、`ClipSegmentToLine`（Sutherland–Hodgman 用的半平面裁剪原语）、
+  参考面裁剪后按点过滤 penetration、0–2 个接触点；A/B 交换得到翻转 manifold 且 **Key 集合相同**。
+- **ContactID 身份语义定稿**：`Key()` 不含 `flip`（朝向元数据），同一物理接触 A/B 交换后 Key 不变；
+  polygon 的 incidentVertex 用**绝对顶点索引**（45° 特征切换时 Key 不跳变）。
+- **SATCache**（D6）：`Contact::satCache` 跨帧保存上一帧 reference face，轴接近平局时沿用；
+  `SolverSettings::useSatCache` 可关闭对比。对称 tie-break（edge 索引→世界锚点）保证 A/B 交换等价。
+- **解析路径补齐**（P06 剩余）：圆-多边形（最近边/顶点 Voronoi 区域）、多边形-平面
+  （最多两个最深顶点 → 盒底平放时有 2 点支撑），双向 flip 重载。
+- **World**：`CreatePolygonShape`/`CreateBoxShape`、Shape 分派、全形状组合窄相分派、
+  SAT cache 持久化、ContactID 跨帧继承；集成测试含盒-地面 2 接触点、双盒 40 次迭代稳定、
+  10 盒 BoxStack 基线、cache 对比、确定性。
+- **Testbed**：`BoxStack` demo（10 层 1m 方块塔，设计文档 W4 D7 的初版），smoke 输出含 angle；
+  FallingBall/SphereStack 保持。
+- 测试 **278**（+68 相对 W3 = PolygonShape 10 + 圆/平面解析 12 + SAT/Clipping 34 +
+  World SAT 11 + 调整；15 个 sandbox death test skip）。
+
+**卡住的地方（现象 → 排查 → 根因 → 修复）**
+1. **BoxStack 直接"爆炸"**（boxes 飞到 x=±15m、只剩 ground 接触、最大穿透一度 0.14m）
+   - 先隔离：独立 probe 直接调用 SAT，两个相切盒子得到 2 点、normal=(0,1)、pen=0、锚点对称；
+     零重力下双盒 200 步纹丝不动 → **不是碰撞/流形 bug**。
+   - 再扫迭代数（300 步，地面 + N 盒）：2 盒 8it 微微倾斜、20it 站住、40it 精确静止；
+     5 盒 8/20/40it 都塌、80it 才站住；10 盒 8–80it 全塌。
+   - 根因：**W4 还没有摩擦（W5 D1-D2）也没有 warm starting（W5 D4）**。PGS 残差每帧产生微小
+     倾斜力矩，盒子一旦倾斜就没有任何横向阻尼，于是滑落、连锁崩塌；位置迭代数完全无关。
+   - 处理：不伪造稳定。10 盒 demo 保留并按设计文档"初版允许抖/塌"如实展示；集成测试改为
+     "双盒 40 迭代站住（证明 solver 有能力）+ 10 盒默认 8 迭代只断言无 NaN/不穿地并打印数据"；
+     W5 的摩擦 + warm starting 是真正的修复，这也是 W5 里程碑 v0.5-stable-stack 的对比基线。
+2. **SAT 的 A/B 对称性容易假通过**：若"平局取 A 侧"，交换 A/B 会让 reference polygon 换人，
+   Key 集合随参数顺序变化，违反 P07 D3/D5。修复：严格对称 tie-break（separation 相等 → 小
+   edge index → 世界面锚点字典序），交换测试覆盖两种位姿。
+3. **incidentVertex 用绝对索引还是边内 0/1**：边内相对索引在 45° 处 incident edge 从 e3 切到 e2 时
+   会跳 Key；改用绝对顶点索引后，方块从 0° 转到 90°（181 帧）Key 只变 2 次
+   （1.0° 2→1 点、89.5° 1→2 点），最深角特征对 `(refEdge=1, incVertex=3)` 181/181 帧存在。
+4. **参考面裁剪要不要第三次独立 clip**：独立 clip 会合成一个深度恰 0 的交点，使顶点-面接触永远
+   2 点，与 D4/P07 的"顶点-面 1 点"矛盾；改为逐点 `penetration < 0` 过滤，相切/面-面行为不变。
+
+**数据（测量条件同前：Windows 11 / i7-12650H / MSVC 19.44）**
+- 质量属性：2×2 m 方块 `m=ρA=4`、`I_c=8/3`；盒放在地面：**2 个接触点**、normal=(0,1)、
+  penetration=5.000mm=`kLinearSlop`。
+- ContactID 稳定性：方块绕 z 轴 0°→90°（0.5° 步长、181 帧）：Key 集合变化 **2 次**（1.0°/89.5°），
+  最深角特征对 181/181 帧存在；不开 cache 也稳定（参考面始终是地面）。
+- SAT cache（D6）：近轴平局场景 cache 使法线/穿透与无 cache 相差 ≤1e-6/0，仅 Key 集合不同；
+  World 级双盒 @20 迭代 300 步：**Key churn 4（cache on）vs 264（off）**、maxPen 0.00280 vs
+  0.00333m → cache 只降特征抖动、不改物理。
+- BoxStack：双盒 @40 迭代 600 步 gap=1.0000、x≈0、angle=0；10 盒 @默认 8：**collapse step≈138**、
+  run 内最大穿透 0.1413m、最终全部摊平（10 个 ground-only 接触、4.8–5.0mm 穿透）。
+  这是 W5 "稳定堆叠"里程碑的 before 基线。
+- 三 preset：debug/release/sanitize 全绿（278 用例 / Release 279，15 skip），项目代码 0 warning；
+  clean 配置+构建+ctest：debug **52.0s** / release **41.5s** / sanitize(ASan) **38.5s**。
+
+**下周（W5，本项目最难的一周）**
+1. 摩擦：`t=Perp(n)`、`K_t`、`λt`，摩擦锥钳制 `accT ∈ [-μ·accN, +μ·accN]`（钳累计值）；
+   斜面 μ>tanθ 静止 / μ<tanθ 下滑；
+2. Warm starting：`ContactPoint` 跨帧继承 + `WarmStart` 施加 `acc*warmFactor`（W3/W4 已把数据准备好）；
+3. Split impulse 位置层替换 W2 的临时位置推出；rest 接触不注入能量；
+4. ImGui 参数面板（迭代数/warmFactor/μ/e/slop/β 实时生效）+ 10 方块堆叠 10 秒稳定里程碑
+   （最大穿透 <0.01m）；顺带把 `Body`→`BodySim`/`BodyState` 冷热拆分放在 W5 末（W4 评估后移）；
+5. tag `v0.5-stable-stack`。
+
+**给未来的自己的提醒**
+1. **没有摩擦和 warm starting 时，任何多层堆叠在物理上都会塌**——W4 的"爆炸"不是 bug，别去调迭代
+   次数或改 SAT 试图修它。W5 的 friction + warm start 才是解法。
+2. ContactID 的 `Key` 不含 flip；incidentVertex 用绝对顶点索引；SAT 平局 tie-break 必须对称
+   （与 A/B 顺序无关），否则 warm starting 会跨帧匹配错点。
+3. 位置推出仍是 `TEMPORARY`（W5 split impulse 替换）；grep TEMPORARY 只剩它。
+4. 多边形形状代码路径对顶点顺序/法线方向极度敏感：改 PolygonShape 后必须跑
+   `test_polygon_shape` + `test_sat` 的 9 位姿与旋转稳定性测试。

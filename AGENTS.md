@@ -11,9 +11,10 @@
 评价标准是「**链路完整 + 原理正确 + 有量化数据 + 代码可读可讲**」，不是功能多。
 设计文档原文在仓库外：`../2D物理引擎项目完整工作流与DeepSeek提示词库.md`（第 5 章按周执行，第 12 章提示词库）。
 
-**当前状态：Week 1-3 已完成**（数学库、Body/World 积分骨架、形状系统 + 圆族解析碰撞 +
-Contact 持久化、**法向 Sequential Impulse 求解器**、Testbed FallingBall/SphereStack 两个 demo、
-测试/CI/构建体系；Week 4-8 的接口已预留）。详见 `docs/ROADMAP.md` 与 `docs/devlog.md`。
+**当前状态：Week 1-4 已完成**（数学库、Body/World 积分骨架、形状系统 + 圆族解析碰撞、
+**凸多边形 + SAT + 裁剪式 Manifold + SATCache**、法向 Sequential Impulse 求解器、
+Testbed FallingBall/SphereStack/BoxStack 三个 demo、测试/CI/构建体系；Week 5-8 的接口已预留）。
+详见 `docs/ROADMAP.md` 与 `docs/devlog.md`。
 
 ---
 
@@ -120,7 +121,8 @@ ctest --preset vs2022-debug
 | 文档 | `docs/*.md`、根 README / AGENTS | 不要 |
 
 **公共 API 冻结**：`World` 全部 public 方法、`Body/BodyDef/Handle/IDPool/TimeStep/Settings`、
-`Math` 全部签名、`Shape/ShapeType/MassData/CircleShape/PlaneShape` 与 `Collide*` 函数、
+`Math` 全部签名、`Shape/ShapeType/MassData/{Circle,Plane,Polygon}Shape`、
+`Collide*`/`FlipManifold`/`SAT`/`CollidePolygons`/`FindMaxSeparation`/`ClipSegmentToLine`/`SATCache` 签名、
 `IBroadPhase/ContactID/Manifold/Contact` 字段语义。
 只允许**追加**；破坏性修改必须在 `docs/dev-interfaces.md` 第 5 节登记理由。
 
@@ -128,13 +130,14 @@ ctest --preset vs2022-debug
 
 - `World::SolvePositionConstraints` 里的 **`TEMPORARY (Week 2)` 位置推出**（slop + 单步钳制的
   mass 加权分离）：W5 用 split impulse 替换。它会向低速接触注入少量势能，长跑"完全静止"断言
-  要写成契约（阈值内不弹/位移有界），不要写成逐帧精确值。grep `TEMPORARY`。
-- 求解器只有法向：无摩擦锥、无 warm start（`WarmStart` 仍 no-op、`Prepare` 每帧从 0 开始累计）、
-  无 split impulse（W5）；冲量累计已写回 `ContactPoint::normalImpulse`，W5 直接接。
+  要写成契约（阈值内不弹/位移有界）。grep `TEMPORARY`。
+- 求解器只有法向：**无摩擦锥、无 warm start（`WarmStart` 仍 no-op、`Prepare` 每帧从 0 开始）、
+  无 split impulse**（全部 W5）；冲量累计已写回 `ContactPoint::normalImpulse`，W5 直接接。
+- 无摩擦 + 无 warm start 导致**多层堆叠在物理上不稳定**（10 盒默认 8 迭代 ~138 步崩塌，
+  如实记录为 W4 基线）；不要用调迭代数去"修"它，W5 摩擦+warm start 才是解法。
 - 宽相仍是 `UpdateContacts` 里的 O(N²) 枚举（W6 换 `IBroadPhase`）。
-- 碰撞只有圆/平面（W4 加 Polygon SAT+裁剪 + `CollideCircleAndPolygon`）；`ContactID` 的
-  A/B 对称映射 W4 完成；`Shape::polygon` 成员待加。
-- `BodySim`/`BodyState` 拆分（W4）、岛屿休眠（W7）、Tracy 与 headless 回归（W6-8）。
+- `BodySim`/`BodyState` 冷热拆分从 W4 移到 **W5 末**（见 dev-interfaces 偏差）；岛屿休眠（W7）、
+  Tracy 与 headless 回归（W6-8）。
 
 ---
 
@@ -157,20 +160,26 @@ ctest --preset vs2022-debug
 
 ---
 
-## 5. 下一周（Week 4）从哪开始
+## 5. 下一周（Week 5）从哪开始
 
-1. 读 `docs/dev-interfaces.md` 第 2 节 R4/R5/R16 行与第 4 节 W4 行；读设计文档第 5 章 Week 4、
-   第 6.3 节（SAT/裁剪）、提示词 P04（PolygonShape 质心/惯性矩）与 P07（SAT + 裁剪 + ContactID）。
-2. W4 的产出：
-   - `Collision/PolygonShape.{h,cpp}`（顶点校验：逆时针、凸、去重共线；面积/质心/惯性矩；SetAsBox；
-     `Shape::polygon` 追加进 tagged union + `ShapeType::Polygon`；World 形状创建 API 加 `CreatePolygonShape`）；
-   - `Collision/SAT.{h,cpp}`、`Clipping.{h,cpp}`：9 种位姿、reference/incident face、最多 2 点；
-   - `CollideCircleAndPolygon`（P06 剩余）；`ContactID` 特征编码 + A/B 交换对称（旋转 100 帧 Key 稳定）；
-   - SAT cache（多轴穿透接近时沿用上一帧 reference）；W4 末做 `Body`→`BodySim`/`BodyState` 冷热拆分。
-3. 测试：P04 质量属性解析值、P07 位姿矩阵/裁剪点数/交换 A/B、ContactID 稳定性；
-   不要把 W3 的 210 个测试当回归基线改弱（行为变化必须解释）。
-4. 完成后更新 `docs/ROADMAP.md`、`docs/dev-interfaces.md`（R4/R5/R16）、`docs/devlog.md`，
-   跑 sanitize，打 tag `v0.4-sat`；testbed 可加 BoxStack 初版 demo。
+1. 读 `docs/dev-interfaces.md` 第 2 节 R8/R15/R18 行与第 4 节 W5 行；读设计文档第 5 章 Week 5、
+   第 6.4 节（摩擦/冲量累计/split impulse）、提示词 P09（摩擦+warm start）、P10（restitution+split
+   impulse）、P14（参数面板）。
+2. W5 的产出：
+   - 摩擦：`t = Perp(normal)`、`K_t`、`λt`、**摩擦锥钳制累计值** `accT ∈ [-μ·accN, +μ·accN]`
+     （μ = sqrt(μA·μB)），在 `ContactSolver::SolveVelocity` 的同一迭代里法向→切向；
+   - Warm starting：`Prepare` 从上一帧 `ContactPoint.normalImpulse/tangentImpulse` 继承（按
+     `ContactID::Key()` 匹配已就绪），`WarmStart` 施加 `acc * warmStartFactor`；`useWarmStarting=false`
+     必须退化为当前行为；
+   - Split impulse：独立伪速度层替换 `World::SolvePositionConstraints` 里的 **`TEMPORARY` 位置推出**
+     （`bias = -(β/dt)·max(0, penetration - slop)`，伪速度不写回真实速度）；
+   - ImGui 实时参数面板（迭代数/warmFactor/μ/e/slop/β）与 Contact 调试面板（法线/接触点/累计冲量）；
+   - W5 末做 `Body`→`BodySim`/`BodyState` 冷热拆分（W4 已登记移到 W5）。
+3. 验收：10 方块堆叠 10 s 稳定（最大穿透 <0.01m）、warmFactor 0/0.5/0.85/1.0 对比表、
+   split impulse 开关对比、斜面摩擦角扫描（μ vs tanθ）、`accN>=0` 1000 帧；
+   **不要降低/删除既有 278 个测试**，行为变化要在报告里解释。
+4. 完成后更新 `docs/ROADMAP.md`、`docs/dev-interfaces.md`（R8/R15/R18）、`docs/devlog.md`，
+   跑 sanitize，打 tag `v0.5-stable-stack`。
 
 ---
 
