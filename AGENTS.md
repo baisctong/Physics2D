@@ -11,9 +11,9 @@
 评价标准是「**链路完整 + 原理正确 + 有量化数据 + 代码可读可讲**」，不是功能多。
 设计文档原文在仓库外：`../2D物理引擎项目完整工作流与DeepSeek提示词库.md`（第 5 章按周执行，第 12 章提示词库）。
 
-**当前状态：Week 1-2 已完成**（数学库、Body/World 积分骨架、形状系统 + 圆族解析碰撞 +
-Contact 持久化 + 临时位置响应、Testbed 地面演示、测试/CI/构建体系；Week 3-8 的接口已预留）。
-详见 `docs/ROADMAP.md` 与 `docs/devlog.md`。
+**当前状态：Week 1-3 已完成**（数学库、Body/World 积分骨架、形状系统 + 圆族解析碰撞 +
+Contact 持久化、**法向 Sequential Impulse 求解器**、Testbed FallingBall/SphereStack 两个 demo、
+测试/CI/构建体系；Week 4-8 的接口已预留）。详见 `docs/ROADMAP.md` 与 `docs/devlog.md`。
 
 ---
 
@@ -126,12 +126,15 @@ ctest --preset vs2022-debug
 
 **当前技术债（明确标记，按周清理）**：
 
-- `World::SolvePositionConstraints` 里的 **`TEMPORARY (Week 2)` 位置推出 + 法向速度投影**：
-  W3 用 Sequential Impulse 替换速度层，W5 用 split impulse 替换位置层。grep `TEMPORARY`。
+- `World::SolvePositionConstraints` 里的 **`TEMPORARY (Week 2)` 位置推出**（slop + 单步钳制的
+  mass 加权分离）：W5 用 split impulse 替换。它会向低速接触注入少量势能，长跑"完全静止"断言
+  要写成契约（阈值内不弹/位移有界），不要写成逐帧精确值。grep `TEMPORARY`。
+- 求解器只有法向：无摩擦锥、无 warm start（`WarmStart` 仍 no-op、`Prepare` 每帧从 0 开始累计）、
+  无 split impulse（W5）；冲量累计已写回 `ContactPoint::normalImpulse`，W5 直接接。
 - 宽相仍是 `UpdateContacts` 里的 O(N²) 枚举（W6 换 `IBroadPhase`）。
-- 碰撞只有圆/平面（W4 加 Polygon SAT+裁剪）；`ContactID` 的 A/B 对称映射 W4 完成。
-- `Shape` 的 `polygon` 成员、`BodySim`/`BodyState` 拆分、岛屿休眠、Tracy 与 headless 回归
-  分别在 W4/W4/W7/W6-8。
+- 碰撞只有圆/平面（W4 加 Polygon SAT+裁剪 + `CollideCircleAndPolygon`）；`ContactID` 的
+  A/B 对称映射 W4 完成；`Shape::polygon` 成员待加。
+- `BodySim`/`BodyState` 拆分（W4）、岛屿休眠（W7）、Tracy 与 headless 回归（W6-8）。
 
 ---
 
@@ -154,17 +157,20 @@ ctest --preset vs2022-debug
 
 ---
 
-## 5. 下一周（Week 3）从哪开始
+## 5. 下一周（Week 4）从哪开始
 
-1. 读 `docs/dev-interfaces.md` 第 2 节 R8 行与第 4 节 W3 行；读设计文档第 5 章 Week 3、
-   第 6.4 节（Sequential Impulse 公式）与提示词 P08。
-2. W3 的产出：`Solver/ContactSolver.{h,cpp}`（若新增文件，记得在 `src/CMakeLists.txt` 登记）；
-   在 `World::WarmStart` / `SolveVelocityConstraints` 里实现法向单次冲量 + 迭代求解 + 累计钳制。
-   **删除** `SolvePositionConstraints` 里的临时速度投影（位置推出保留到 W5 换 split impulse）。
-3. 测试：`v=J/m`、`ω=Cross(r,J)/I`、动量守恒（<1e-4）、二球正碰、3 球链式、迭代收敛曲线、
-   `K_n>0`；球-球/球-地面用真实冲量后与 W2 的临时行为对比（devlog 记数据）。
-4. 完成后更新 `docs/ROADMAP.md`、`docs/dev-interfaces.md`（R8 状态）、`docs/devlog.md`，
-   跑 sanitize，打 tag `v0.3-impulse`。
+1. 读 `docs/dev-interfaces.md` 第 2 节 R4/R5/R16 行与第 4 节 W4 行；读设计文档第 5 章 Week 4、
+   第 6.3 节（SAT/裁剪）、提示词 P04（PolygonShape 质心/惯性矩）与 P07（SAT + 裁剪 + ContactID）。
+2. W4 的产出：
+   - `Collision/PolygonShape.{h,cpp}`（顶点校验：逆时针、凸、去重共线；面积/质心/惯性矩；SetAsBox；
+     `Shape::polygon` 追加进 tagged union + `ShapeType::Polygon`；World 形状创建 API 加 `CreatePolygonShape`）；
+   - `Collision/SAT.{h,cpp}`、`Clipping.{h,cpp}`：9 种位姿、reference/incident face、最多 2 点；
+   - `CollideCircleAndPolygon`（P06 剩余）；`ContactID` 特征编码 + A/B 交换对称（旋转 100 帧 Key 稳定）；
+   - SAT cache（多轴穿透接近时沿用上一帧 reference）；W4 末做 `Body`→`BodySim`/`BodyState` 冷热拆分。
+3. 测试：P04 质量属性解析值、P07 位姿矩阵/裁剪点数/交换 A/B、ContactID 稳定性；
+   不要把 W3 的 210 个测试当回归基线改弱（行为变化必须解释）。
+4. 完成后更新 `docs/ROADMAP.md`、`docs/dev-interfaces.md`（R4/R5/R16）、`docs/devlog.md`，
+   跑 sanitize，打 tag `v0.4-sat`；testbed 可加 BoxStack 初版 demo。
 
 ---
 

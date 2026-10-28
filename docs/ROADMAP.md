@@ -41,7 +41,7 @@
 - 遗留技术债（W3/W5 清理）：`World::SolvePositionConstraints` 内 `TEMPORARY` 位置推出与速度投影；
   O(N²) 配对枚举（W6 换 `IBroadPhase`）；圆-多边形碰撞（W4）。
 
-## Week 3 · Sequential Impulse（只有法向）
+## Week 3 · Sequential Impulse（只有法向） ✅
 
 | 日 | 任务 | DoD |
 | --- | --- | --- |
@@ -54,6 +54,17 @@
 | D7 | Demo SphereStack + tag `v0.3-impulse` | 3 球叠放能停住（允许抖） |
 
 要填：R8 的 `WarmStart`（占位）/`SolveVelocityConstraints` 法向部分；`Solver/ContactSolver`。
+
+**Week 3 验收结果（2026-10-28，tag `v0.3-impulse`）**
+- `Solver/ContactSolver`（只法向）落地：K_n、累计钳制、迭代、restitution 速度阈值；World 的
+  `PrepareConstraints`/`SolveVelocityConstraints` 接线，W2 临时速度投影删除（只剩位置推出等 W5）。
+- 数据：1 次迭代残余 g·dt/2=0.0833 → 8 次 0.00065 m/s；静止穿透 5.000 mm = kLinearSlop；
+  1:3 正碰动量误差 <1e-4；e=0.8 5m 反弹 `rebound/impact≈0.8`（峰值 3.55，W5 收紧）。
+- Testbed `SphereStack`：3 球叠放 300 帧保持 3 个持续接触（y≈0.494/1.488/2.482，残余速度≤0.019 m/s），
+  符合 D7"能停住、允许抖"。FallingBall 更新为真实冲量语义。
+- 测试 210（Release 211，多出 release-only skip 契约测试）；三 preset 全绿、0 警告。
+- 遗留技术债：`SolvePositionConstraints` 的位置推出（W5 split impulse）；O(N²) 配对（W6）；
+  无摩擦/无 warm start/无 split impulse（W5）；多边形碰撞（W4）。
 
 ## Week 4 · SAT + Manifold 生成
 

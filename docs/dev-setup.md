@@ -96,7 +96,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/format.ps1
 # 生成 compile_commands.json（clangd/VSCode 用）：configure 时已默认开启
 ```
 
-## 5. 测试台操作（Week 1-2）
+## 5. 测试台操作（Week 1-3）
 
 | 操作 | 按键 / 方式 |
 | --- | --- |
@@ -105,21 +105,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/format.ps1
 | 复位视角 | `R` |
 | 暂停 / 单步 | 左侧 ImGui 面板 |
 | 重力调节 | 左侧 ImGui 滑块（实时写回 `World::SetGravity`） |
+| 场景切换 | 左侧场景下拉框（`FallingBall` / `SphereStack`） |
 | 恢复系数（FallingBall） | 左侧场景面板的 restitution 滑块（实时 `World::SetRestitution`） |
 | 显示接触点 / 法线 | 左侧 Display 开关（Contact points / Contact normals） |
-| 重新落下 | 左侧场景面板 "Drop again" 按钮 |
+| 重新落下 / 重置叠放 | 左侧场景面板的按钮 |
 
-状态面板同时显示 shapes / contacts / 最大穿透（mm）与球的位置/速度。
-Week 2 的响应是**临时**位置修正 + 速度投影（`TEMPORARY`，W3/W5 替换），
-所以 e>0 的弹跳只是近似，不要用它评估真实弹性碰撞。
+状态面板显示 shapes / contacts / 最大穿透（mm）、FPS、Step 耗时；`SphereStack` 场景面板还会
+显示每个球的位置/速度。Week 3 的求解器是**法向 Sequential Impulse**，restitution 由速度阈值
+控制（≥1 m/s 才弹）；摩擦/warm starting/split impulse 在 Week 5 加入。
 
 自动化冒烟测试（不依赖人眼看窗口）：
 
 ```powershell
-.\build\debug\testbed\physics2d_testbed.exe --smoke 120 --hidden
-# 输出 frames/physics_steps/bodies/shapes/contacts/avg_frame_ms + 每个 body 的 position/velocity
-# 球从 y=4 落到平面地面后应稳定在 y≈0.492（半径 0.5，稳态穿透 ≈ 7.8 mm）
+# 单球落地：150 帧后 contacts=1，球心 y≈0.495（半径 0.5，穿透 5.000 mm = kLinearSlop）
+.\build\debug\testbed\physics2d_testbed.exe --demo FallingBall --smoke 150 --hidden
+
+# 3 球叠放：300 帧后 bodies=4 contacts=3，三球 y≈0.494/1.488/2.482，残余速度 ≤0.019 m/s
+.\build\debug\testbed\physics2d_testbed.exe --demo SphereStack --smoke 300 --hidden
 ```
+
+`--demo` 名字大小写/分隔符不敏感；未知名字打印可用列表并以退出码 2 退出。
 
 ## 6. 疑难杂症
 

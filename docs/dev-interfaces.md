@@ -45,7 +45,7 @@
 | R5 | 窄相数据 | **W2 已实现**：`CollideCircles`、`CollideCircleAndPlane`、`CollidePlaneAndCircle`、`FlipManifold`；`ContactID` type 2/3 已分配；`Manifold`/`ContactPoint` 结构不变 | W4 | `CollideCircleAndPolygon`（最近特征/Voronoi，P06 剩余部分）、`SAT`+`Clipping`（P07） | 9 种位姿、面-面 2 点/顶点-面 1 点、交换 A/B 法线反向 |
 | R6 | Contact 持久化 | **W2 已实现**：`World::UpdateContacts` 按 body 对 + `ContactID::Key()` 继承每点累计冲量（`m_previousContacts`），`isPersistent` 就位；文件已移到 `Collision/Contact.h` | W5 | warm start 正式使用继承的冲量；`MatchAndInheritImpulses` 抽成独立可测函数 | 缓慢旋转 100 帧同一接触 Key 不变（W4 D5） |
 | R7 | 窄相阶段 | **W2 已实现**：`World::UpdateContacts()` = O(N²) 对枚举 + AABB 过滤 + 按形状类型分派 | W6 | 把对枚举换成 `IBroadPhase::QueryPairs`；窄相函数表（3×3 分派）随 Polygon 一起抽 | 与宽相配对数量一致；无 NaN；切宽相行为不变（回归 hash） |
-| R8 | 求解器阶段 | `World::WarmStart()`、`SolveVelocityConstraints()`、`SolvePositionConstraints()` 为空；`SolverSettings` 已定义 | W3/W5 | `Solver/ContactSolver.{h,cpp}`：法向 SI（W3）、摩擦+累计钳制+warm start（W5）、restitution+split impulse（W5） | 10 方块堆叠稳定、动量/能量守恒、`accN>=0` 恒成立 |
+| R8 | 求解器阶段 | **W3 已实现**：`Solver/ContactSolver.h/.cpp`（Prepare/WarmStart(no-op)/SolveVelocity，法向 K_n、累计钳制、迭代、restitution bias）；`World::PrepareConstraints/SolveVelocityConstraints` 已接线；Week 2 的临时速度投影已删除 | W5 | 追加切向摩擦锥、warm start（`WarmStart` 实装）、split impulse 位置层；`SolverSettings` 的 warmFactor/β/slop 生效 | 10 方块堆叠稳定、动量/能量守恒、`accN>=0` 恒成立、e=0.8 反弹≈3.2m |
 | R9 | 岛屿/休眠 | `World::BuildIslands()`、`UpdateSleep()` 为空；`Body::islandId`、`sleepTime`、`allowSleep`、`World::GetIslandCount()`、`GetAwakeBodyCount()` 已留 | W7 | `Solver/Island.{h,cpp}`、`Sleep`；整岛原子睡眠/唤醒 | 3 岛/合并岛测试；sleep 后状态逐位不变；多米诺连锁唤醒 |
 | R10 | 接触/岛统计 | `World::GetContactCount()` **W2 已接真实计数**；`GetShapeCount()` 已加；`GetIslandCount()` 仍返回 0（W7） | W7 | 岛屿统计接真实值；回归输出 awake 曲线 | ImGui 面板数字与实际一致 |
 | R11 | 性能剖析 | `Core/Profiler.h` 宏已定义（默认空）；CMake 选项 `PHYSICS2D_ENABLE_TRACY`/`PHYSICS2D_TRACY_ROOT` 已留 | W6/W8 | 打开 Tracy、在 8 个 Step 阶段与 SAP 排序/扫描埋点；`Plot` awake/contact 数 | Tracy 时间线与 README 数字对应 |
@@ -80,7 +80,7 @@
 | 周 | 提示词 | 要交付的文件（新增/填充） | 需要填的预留方法 |
 | --- | --- | --- | --- |
 | W2 | P05(完整)、P06 | ✅ **已完成**：`Core/Shape.h`、`Collision/{ShapeTypes,CircleShape,PlaneShape,Analytic,Contact}.{h,cpp}`、`World` 形状池/接触列表/临时响应、Testbed 地面演示 | `World::UpdateContacts`（O(N²)）、`Synchronize`、`SolvePositionConstraints`（临时） |
-| W3 | P08 | `Solver/{ContactSolver}.{h,cpp}`、`Body::ApplyLinearImpulse`（已实现，直接用） | `World::SolveVelocityConstraints`（仅法向） |
+| W3 | P08 | ✅ **已完成**：`Solver/ContactSolver.{h,cpp}`（法向 SI + restitution bias）、World 的 `PrepareConstraints`/`SolveVelocityConstraints` 接线、删除 W2 临时速度投影；Testbed SphereStack demo | `World::SolveVelocityConstraints`（法向部分） |
 | W4 | P04、P07 | `Collision/{PolygonShape,SAT,Clipping}.{h,cpp}`、`ContactID` 对称映射 | `World::UpdateContacts` 走 SAT；W4 末做 R15 冷热拆分 |
 | W5 | P09、P10、P14 | `Solver/ContactSolver` 扩展：摩擦锥、累计钳制、warm start、restitution、split impulse；DebugUI 参数面板 | `World::WarmStart`、`World::SolvePositionConstraints` |
 | W6 | P11、P12、D04 | `Collision/{BroadPhaseBruteForce,BroadPhaseSAP}`、`bench/bench_broadphase` 实现、`testbed/SceneBuilders.h` | `World::UpdateBroadPhase`、`World::Synchronize`；`m_broadPhase` 接线 |
