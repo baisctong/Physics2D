@@ -362,12 +362,13 @@ TEST(CollidePlaneAndCircle, IsTheFlippedCircleAndPlaneManifold) {
     EXPECT_TRUE(planeFirst.points[0].localPointA == circleFirst.points[0].localPointB);
     EXPECT_TRUE(planeFirst.points[0].localPointB == circleFirst.points[0].localPointA);
 
-    // Both use the circle-plane feature type; only the flip bit differs, which is
-    // exactly one bit in the Key (bit 10).
+    // Both use the circle-plane feature identity. `flip` is orientation metadata
+    // (Week 4) and is deliberately excluded from Key(), so the contact identity is
+    // identical whether the geometry was evaluated as (A,B) or (B,A).
     EXPECT_EQ(planeFirst.points[0].id.type, p2::kContactTypeCirclePlane);
     EXPECT_EQ(circleFirst.points[0].id.flip, 0);
     EXPECT_EQ(planeFirst.points[0].id.flip, 1);
-    EXPECT_EQ(planeFirst.points[0].id.Key() ^ circleFirst.points[0].id.Key(), 0x0400);
+    EXPECT_EQ(planeFirst.points[0].id.Key(), circleFirst.points[0].id.Key());
 
     // The plane-first anchors must agree in world space too.
     ExpectWorldAnchorsAgree(planeFirst, xfPlane, xfCircle, kAnchorTolerance);
@@ -392,7 +393,10 @@ TEST(FlipManifold, ReversesGeometryAndIsAnInvolution) {
     EXPECT_TRUE(flipped.points[0].localPointA == original.points[0].localPointB);
     EXPECT_TRUE(flipped.points[0].localPointB == original.points[0].localPointA);
     EXPECT_EQ(flipped.points[0].id.flip, 1);
-    EXPECT_EQ(flipped.points[0].id.Key() ^ original.points[0].id.Key(), 0x0400);
+    // Flipping toggles the flip metadata but not the contact identity: Key() is
+    // flip-independent (Week 4 semantics), so the same physical contact keeps the
+    // same Key regardless of the A/B evaluation order.
+    EXPECT_EQ(flipped.points[0].id.Key(), original.points[0].id.Key());
 
     // Flipping twice restores the original manifold, including the Key.
     const Manifold restored = p2::FlipManifold(flipped);
@@ -441,7 +445,9 @@ TEST(FlipManifold, SwapsEveryPointOfATwoPointManifold) {
 }
 
 TEST(ContactID, CircleFeatureTypesAndKeyPacking) {
-    // Key layout: bits 8-9 = type, bit 10 = flip.
+    // Key layout: bits 8-9 = type. `flip` is Week-4 metadata and is NOT hashed
+    // into the identity (the same physical contact must keep its Key when A/B are
+    // swapped, P07 D3/D5).
     const CircleShape circle = MakeCircle(0.5f);
     const PlaneShape plane;
 
@@ -459,11 +465,12 @@ TEST(ContactID, CircleFeatureTypesAndKeyPacking) {
     EXPECT_EQ(circlePlane.points[0].id.type, p2::kContactTypeCirclePlane);
     EXPECT_EQ(circlePlane.points[0].id.Key(), 0x0300);
 
-    // Plane-circle: same type, flip bit set -> 0x0300 | 0x0400 = 0x0700.
+    // Plane-circle: same identity, flip metadata set, same Key (0x0300).
     const Manifold planeCircle = p2::CollidePlaneAndCircle(plane, Transform{}, circle, xfCircle);
     ASSERT_EQ(planeCircle.pointCount, 1);
     EXPECT_EQ(planeCircle.points[0].id.type, p2::kContactTypeCirclePlane);
-    EXPECT_EQ(planeCircle.points[0].id.Key(), 0x0700);
+    EXPECT_EQ(planeCircle.points[0].id.flip, 1);
+    EXPECT_EQ(planeCircle.points[0].id.Key(), 0x0300);
 }
 
 TEST(ContactID, KeyIsStableAcrossFramesWhileTheContactPersists) {
@@ -485,6 +492,27 @@ TEST(ContactID, KeyIsStableAcrossFramesWhileTheContactPersists) {
         }
         previousKey = key;
     }
+}
+
+TEST(ContactID, KeyIsIndependentOfFlipMetadata) {
+    // Week 4 semantics: Key() is the physical contact identity and must not encode
+    // the `flip` metadata. Otherwise evaluating a pair as (A,B) or (B,A) would
+    // change the identity, and warm starting (Week 5) would lose the contact.
+    p2::ContactID original;
+    original.referenceEdge = 3;
+    original.incidentVertex = 5;
+    original.type = p2::kContactTypeFaceFace;
+    original.flip = 0;
+
+    p2::ContactID flipped = original;
+    flipped.flip = 1;
+
+    // Key layout: referenceEdge bits 0-3, incidentVertex bits 4-7, type bits 8-9.
+    //   3 | (5 << 4) | (1 << 8) = 3 | 0x50 | 0x100 = 0x153.
+    EXPECT_EQ(original.Key(), 0x0153);
+    EXPECT_EQ(flipped.Key(), original.Key());
+    // The full comparison still distinguishes the orientation metadata.
+    EXPECT_NE(flipped, original);
 }
 
 TEST(ContactPoints, WorldAnchorsAgreeForArbitraryTransforms) {

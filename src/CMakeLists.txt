@@ -17,6 +17,9 @@ add_library(physics2d_core STATIC
     Core/Shape.cpp
     Collision/CircleShape.cpp
     Collision/PlaneShape.cpp
+    Collision/PolygonShape.cpp
+    Collision/Clipping.cpp
+    Collision/SAT.cpp
     Collision/Analytic.cpp
     Solver/ContactSolver.cpp
 )

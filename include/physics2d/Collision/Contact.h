@@ -19,6 +19,7 @@
 // point but stay zero until the Sequential Impulse solver lands in Week 3/5.
 
 #include "physics2d/Collision/Manifold.h"
+#include "physics2d/Collision/SATCache.h"
 #include "physics2d/Core/Handle.h"
 
 namespace p2 {
@@ -37,6 +38,10 @@ struct Contact {
     // True when this pair also existed in the previous frame. Only persistent
     // contacts may warm-start from their accumulated impulses (Week 5).
     bool isPersistent = false;
+
+    // Week 4 D6: SAT hysteresis carried across frames for this pair (see
+    // SATCache.h). Only meaningful for polygon-polygon contacts.
+    SATCache satCache;
 };
 
 } // namespace p2

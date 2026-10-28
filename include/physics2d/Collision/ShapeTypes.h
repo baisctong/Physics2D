@@ -16,8 +16,13 @@ namespace p2 {
 enum class ShapeType : uint8_t {
     Circle = 0, // Week 2
     Plane = 1,  // Week 2: infinite static half-space (ground)
-    Polygon = 2 // reserved (Week 4, P04/P07)
+    Polygon = 2 // Week 4: convex polygon (P04/P07)
 };
+
+// Section 4.4 / P04: the design caps convex polygons at 8 vertices (SAT cost is
+// O(edges) per axis and the clipping code stays branch-free at this size).
+// The constant lives here (not in Manifold.h) because PolygonShape owns it.
+inline constexpr int32_t kMaxPolygonVertices = 8;
 
 // Result of integrating a shape's area/density. The `center` is expressed in the
 // body-local frame and `inertia` is taken about that center (parallel-axis

@@ -23,6 +23,7 @@
 #include "physics2d/Collision/CircleShape.h"
 #include "physics2d/Collision/Manifold.h"
 #include "physics2d/Collision/PlaneShape.h"
+#include "physics2d/Collision/PolygonShape.h"
 #include "physics2d/Math/Transform.h"
 
 namespace p2 {
@@ -39,6 +40,34 @@ namespace p2 {
 // Plane A vs circle B: identical geometry with the manifold flipped.
 [[nodiscard]] Manifold CollidePlaneAndCircle(const PlaneShape& plane, const Transform& xfPlane,
                                              const CircleShape& circle, const Transform& xfCircle) noexcept;
+
+// ---------------------------------------------------------------------------
+// Week 4 analytic paths: circle vs convex polygon and polygon vs infinite plane.
+// These stay analytic (nearest feature / vertex-depth + face clipping) instead of
+// going through SAT, per Section 6.3 ("圆相关走专门解析路径").
+// ---------------------------------------------------------------------------
+
+// Circle A vs polygon B. The polygon's closest feature (edge Voronoi region or
+// vertex Voronoi region) determines the normal; ContactID identifies that feature
+// (see ContactID.h) so the key is stable while the feature does not change.
+[[nodiscard]] Manifold CollideCircleAndPolygon(const CircleShape& circle, const Transform& xfCircle,
+                                               const PolygonShape& polygon,
+                                               const Transform& xfPolygon) noexcept;
+
+// Polygon A vs circle B: identical geometry with the manifold flipped.
+[[nodiscard]] Manifold CollidePolygonAndCircle(const PolygonShape& polygon, const Transform& xfPolygon,
+                                               const CircleShape& circle, const Transform& xfCircle) noexcept;
+
+// Polygon A vs infinite plane B. Produces up to two contact points (all vertices
+// behind the plane; the BoxStack demo needs a stable two-point support for a box
+// resting on the ground), each with its polygon vertex index in the ContactID.
+[[nodiscard]] Manifold CollidePolygonAndPlane(const PolygonShape& polygon, const Transform& xfPolygon,
+                                              const PlaneShape& plane, const Transform& xfPlane) noexcept;
+
+// Plane A vs polygon B: identical geometry with the manifold flipped.
+[[nodiscard]] Manifold CollidePlaneAndPolygon(const PlaneShape& plane, const Transform& xfPlane,
+                                              const PolygonShape& polygon,
+                                              const Transform& xfPolygon) noexcept;
 
 // Reverse a manifold: negate the normal, swap localPointA/localPointB on every
 // contact point and toggle the ContactID flip bit. Penetration and pointCount

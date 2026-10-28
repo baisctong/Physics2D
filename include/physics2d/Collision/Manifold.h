@@ -29,7 +29,6 @@ namespace p2 {
 
 // Section 4.4 / P06: a 2D polygon contact has at most two points.
 inline constexpr int32_t kMaxManifoldPoints = 2;
-inline constexpr int32_t kMaxPolygonVertices = 8;
 
 struct ContactPoint {
     // Contact anchors in each body's local frame. The solver recomputes the

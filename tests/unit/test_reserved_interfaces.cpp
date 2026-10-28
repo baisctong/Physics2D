@@ -163,34 +163,36 @@ TEST(ReservedInterfacesTest, ContactIDPacksFeatureBits) {
     id.referenceEdge = 3;  // bits 0-3 -> 0x003
     id.incidentVertex = 5; // bits 4-7 -> 5 << 4 = 0x050
     id.type = 2;           // bits 8-9 -> 2 << 8 = 0x200
-    id.flip = 1;           // bit 10   -> 1 << 10 = 0x400
-    // Hand-computed: 0x400 | 0x200 | 0x050 | 0x003 = 0x653.
-    EXPECT_EQ(id.Key(), 0x653U);
+    id.flip = 1;           // metadata since Week 4: NOT part of Key()
+    // Hand-computed identity: 0x200 | 0x050 | 0x003 = 0x253. The orientation
+    // metadata (`flip`) is deliberately excluded so the same physical contact keeps
+    // its key when the SAT routine evaluates A/B in the other order (P07 D3/D5).
+    EXPECT_EQ(id.Key(), 0x253U);
 
     // Each field is masked to its documented width before packing.
     p2::ContactID saturated;
     saturated.referenceEdge = 0xFF;  // & 0x0F -> 0x00F
     saturated.incidentVertex = 0xFF; // & 0x0F -> 0x0F0
     saturated.type = 0xFF;           // & 0x03 -> 0x300
-    saturated.flip = 0xFF;           // & 0x01 -> 0x400
-    EXPECT_EQ(saturated.Key(), 0x7FFU);
+    saturated.flip = 0xFF;           // metadata only
+    EXPECT_EQ(saturated.Key(), 0x3FFU);
 
-    // Equality is defined on Key(), so extra high bits that are masked away do
-    // not distinguish two ids (the collision code only fills valid ranges).
+    // Full-field equality includes the orientation metadata; Key() is the
+    // identity used for cross-frame impulse inheritance.
     p2::ContactID maskedOverflow = id;
-    maskedOverflow.referenceEdge = 0x13; // & 0x0F == 3
-    EXPECT_EQ(maskedOverflow, id);
-    EXPECT_EQ(maskedOverflow.Key(), id.Key());
+    maskedOverflow.referenceEdge = 0x13; // raw field differs from id.referenceEdge
+    EXPECT_NE(maskedOverflow, id);
+    EXPECT_EQ(maskedOverflow.Key(), id.Key()); // masked to 4 bits, same identity
 
-    // The swap bit is part of the key: a flipped contact is a different feature.
     p2::ContactID flipped = id;
     flipped.flip = 0;
-    EXPECT_NE(flipped, id);
-    EXPECT_NE(flipped.Key(), id.Key());
+    EXPECT_NE(flipped, id);             // full comparison sees the metadata
+    EXPECT_EQ(flipped.Key(), id.Key()); // identity is orientation-independent
 
     p2::ContactID referenceEdgeChanged = id;
     referenceEdgeChanged.referenceEdge = 4;
     EXPECT_NE(referenceEdgeChanged, id);
+    EXPECT_NE(referenceEdgeChanged.Key(), id.Key());
 }
 
 TEST(ReservedInterfacesTest, ManifoldDataLayoutIsUsable) {
