@@ -11,8 +11,9 @@
 评价标准是「**链路完整 + 原理正确 + 有量化数据 + 代码可读可讲**」，不是功能多。
 设计文档原文在仓库外：`../2D物理引擎项目完整工作流与DeepSeek提示词库.md`（第 5 章按周执行，第 12 章提示词库）。
 
-**当前状态：Week 1 已完成**（数学库、Body/World 积分骨架、Testbed 骨架、单测/CI/构建体系、
-Week 2-8 预留接口）。详见 `docs/ROADMAP.md` 与 `docs/devlog.md`。
+**当前状态：Week 1-2 已完成**（数学库、Body/World 积分骨架、形状系统 + 圆族解析碰撞 +
+Contact 持久化 + 临时位置响应、Testbed 地面演示、测试/CI/构建体系；Week 3-8 的接口已预留）。
+详见 `docs/ROADMAP.md` 与 `docs/devlog.md`。
 
 ---
 
@@ -119,8 +120,18 @@ ctest --preset vs2022-debug
 | 文档 | `docs/*.md`、根 README / AGENTS | 不要 |
 
 **公共 API 冻结**：`World` 全部 public 方法、`Body/BodyDef/Handle/IDPool/TimeStep/Settings`、
-`Math` 全部签名、`IBroadPhase/ContactID/Manifold/Contact` 字段语义。
+`Math` 全部签名、`Shape/ShapeType/MassData/CircleShape/PlaneShape` 与 `Collide*` 函数、
+`IBroadPhase/ContactID/Manifold/Contact` 字段语义。
 只允许**追加**；破坏性修改必须在 `docs/dev-interfaces.md` 第 5 节登记理由。
+
+**当前技术债（明确标记，按周清理）**：
+
+- `World::SolvePositionConstraints` 里的 **`TEMPORARY (Week 2)` 位置推出 + 法向速度投影**：
+  W3 用 Sequential Impulse 替换速度层，W5 用 split impulse 替换位置层。grep `TEMPORARY`。
+- 宽相仍是 `UpdateContacts` 里的 O(N²) 枚举（W6 换 `IBroadPhase`）。
+- 碰撞只有圆/平面（W4 加 Polygon SAT+裁剪）；`ContactID` 的 A/B 对称映射 W4 完成。
+- `Shape` 的 `polygon` 成员、`BodySim`/`BodyState` 拆分、岛屿休眠、Tracy 与 headless 回归
+  分别在 W4/W4/W7/W6-8。
 
 ---
 
@@ -143,13 +154,17 @@ ctest --preset vs2022-debug
 
 ---
 
-## 5. 下一周（Week 2）从哪开始
+## 5. 下一周（Week 3）从哪开始
 
-1. 读 `docs/dev-interfaces.md` 第 2 节 R4/R5/R6/R7 行与第 4 节 W2 行。
-2. 读设计文档第 5 章 Week 2、第 6.3 节、提示词 P05(完整)/P06。
-3. W2 的产出：形状系统（Circle/Plane；Polygon 留到 W4 的 P04）、圆-圆/圆-平面解析碰撞、
-   `Contact` + `ContactID` 初版、`World::UpdateContacts` 接线、第一个"球停在地面上"demo。
-4. 完成后更新 `docs/ROADMAP.md` 状态、`docs/dev-interfaces.md` R 表格状态、`docs/devlog.md`、打 tag `v0.2-plane-contact`。
+1. 读 `docs/dev-interfaces.md` 第 2 节 R8 行与第 4 节 W3 行；读设计文档第 5 章 Week 3、
+   第 6.4 节（Sequential Impulse 公式）与提示词 P08。
+2. W3 的产出：`Solver/ContactSolver.{h,cpp}`（若新增文件，记得在 `src/CMakeLists.txt` 登记）；
+   在 `World::WarmStart` / `SolveVelocityConstraints` 里实现法向单次冲量 + 迭代求解 + 累计钳制。
+   **删除** `SolvePositionConstraints` 里的临时速度投影（位置推出保留到 W5 换 split impulse）。
+3. 测试：`v=J/m`、`ω=Cross(r,J)/I`、动量守恒（<1e-4）、二球正碰、3 球链式、迭代收敛曲线、
+   `K_n>0`；球-球/球-地面用真实冲量后与 W2 的临时行为对比（devlog 记数据）。
+4. 完成后更新 `docs/ROADMAP.md`、`docs/dev-interfaces.md`（R8 状态）、`docs/devlog.md`，
+   跑 sanitize，打 tag `v0.3-impulse`。
 
 ---
 

@@ -40,14 +40,14 @@
 | --- | --- | --- | --- | --- | --- |
 | R1 | 宽相抽象 | `Core/BroadPhaseInterface.h`：纯虚类 + `PairCallback` 已定义，无实现 | W6 | 新增 `Collision/BroadPhaseBruteForce.{h,cpp}`、`BroadPhaseSAP.{h,cpp}`；testbed 下拉框切换 | 两实现的配对集合与暴力参考完全一致（10 组随机场景 × 50/200/500 物体）；bench 出数字 |
 | R2 | 宽相接线 | `World::SetBroadPhase` / `GetBroadPhase` / `m_broadPhase` 已存在（默认 null）；`World::UpdateBroadPhase()` 为空 | W6 | 在 `UpdateBroadPhase` 里同步 `Body::aabb` → proxy，`QueryPairs` 结果交 R4 | 切宽相不改变物理结果（回归 hash 一致） |
-| R3 | AABB 同步 | `Body::aabb` 字段已留；`World::Synchronize()` 为空 | W6 | 形状 AABB 计算 + fat AABB（`AABB::Extend`） | fat margin 可在 ImGui 调；高速物体不漏检 |
-| R4 | 形状系统 | `Body::shape`（`ShapeHandle`）字段已留；无 Shape 类 | W2/W4 | 新增 `Core/Shape.h`、`Collision/CircleShape.h`、`PolygonShape.h`；`World` 形状存储池；`CreateShape`/`AttachShape` | P04/P06 全部单测 |
-| R5 | 窄相数据 | `Collision/ContactID.h`、`Manifold.h` 已定义（含 `Key()` 打包） | W2/W4 | `CollideCircles`、`CollideCircleAndPolygon`、`CollidePolygonAndPlane`（W2）；`SAT`+`Clipping`（W4） | 9 种位姿、面-面 2 点/顶点-面 1 点、交换 A/B 法线反向 |
-| R6 | Contact 幂等匹配 | `Solver/Contact.h` 已定义（bodyA/B、manifold、friction、restitution、isPersistent） | W2/W5 | `ContactManager`/`UpdateContacts` 持久化；按 `ContactID::Key()` 继承累计冲量（`MatchAndInheritImpulses`） | 缓慢旋转 100 帧同一接触 Key 不变（W4 D5） |
-| R7 | 窄相阶段 | `World::UpdateContacts()` 为空 | W2-W5 | 遍历候选对 → `Contact` 列表 | 与宽相配对数量一致；无 NaN |
+| R3 | AABB 同步 | `World::Synchronize()` 已实现（W2：由形状算 `Body::aabb`）；fat AABB margin 未做 | W6 | 加 margin 外推（`AABB::Extend`）；平面形状由宽相特判 | fat margin 可在 ImGui 调；高速物体不漏检 |
+| R4 | 形状系统 | **W2 已实现**：`Core/Shape.h` + `Collision/{ShapeTypes,CircleShape,PlaneShape}.h`、World 形状池、`CreateCircleShape`/`CreatePlaneShape`/`AttachShape`；`PolygonShape` 未做 | W4 | 追加 `Shape::polygon` + `ShapeType::Polygon` + `Collision/PolygonShape.{h,cpp}` | P04 全部单测；既有圆/平面测试不回归 |
+| R5 | 窄相数据 | **W2 已实现**：`CollideCircles`、`CollideCircleAndPlane`、`CollidePlaneAndCircle`、`FlipManifold`；`ContactID` type 2/3 已分配；`Manifold`/`ContactPoint` 结构不变 | W4 | `CollideCircleAndPolygon`（最近特征/Voronoi，P06 剩余部分）、`SAT`+`Clipping`（P07） | 9 种位姿、面-面 2 点/顶点-面 1 点、交换 A/B 法线反向 |
+| R6 | Contact 持久化 | **W2 已实现**：`World::UpdateContacts` 按 body 对 + `ContactID::Key()` 继承每点累计冲量（`m_previousContacts`），`isPersistent` 就位；文件已移到 `Collision/Contact.h` | W5 | warm start 正式使用继承的冲量；`MatchAndInheritImpulses` 抽成独立可测函数 | 缓慢旋转 100 帧同一接触 Key 不变（W4 D5） |
+| R7 | 窄相阶段 | **W2 已实现**：`World::UpdateContacts()` = O(N²) 对枚举 + AABB 过滤 + 按形状类型分派 | W6 | 把对枚举换成 `IBroadPhase::QueryPairs`；窄相函数表（3×3 分派）随 Polygon 一起抽 | 与宽相配对数量一致；无 NaN；切宽相行为不变（回归 hash） |
 | R8 | 求解器阶段 | `World::WarmStart()`、`SolveVelocityConstraints()`、`SolvePositionConstraints()` 为空；`SolverSettings` 已定义 | W3/W5 | `Solver/ContactSolver.{h,cpp}`：法向 SI（W3）、摩擦+累计钳制+warm start（W5）、restitution+split impulse（W5） | 10 方块堆叠稳定、动量/能量守恒、`accN>=0` 恒成立 |
 | R9 | 岛屿/休眠 | `World::BuildIslands()`、`UpdateSleep()` 为空；`Body::islandId`、`sleepTime`、`allowSleep`、`World::GetIslandCount()`、`GetAwakeBodyCount()` 已留 | W7 | `Solver/Island.{h,cpp}`、`Sleep`；整岛原子睡眠/唤醒 | 3 岛/合并岛测试；sleep 后状态逐位不变；多米诺连锁唤醒 |
-| R10 | 接触/岛统计 | `World::GetContactCount()` 返回 0；`GetIslandCount()` 返回 0；`GetAwakeBodyCount()` 当前按类型粗算 | W2/W7 | 接真实计数，供 DebugUI/回归输出 | ImGui 面板数字与实际一致 |
+| R10 | 接触/岛统计 | `World::GetContactCount()` **W2 已接真实计数**；`GetShapeCount()` 已加；`GetIslandCount()` 仍返回 0（W7） | W7 | 岛屿统计接真实值；回归输出 awake 曲线 | ImGui 面板数字与实际一致 |
 | R11 | 性能剖析 | `Core/Profiler.h` 宏已定义（默认空）；CMake 选项 `PHYSICS2D_ENABLE_TRACY`/`PHYSICS2D_TRACY_ROOT` 已留 | W6/W8 | 打开 Tracy、在 8 个 Step 阶段与 SAP 排序/扫描埋点；`Plot` awake/contact 数 | Tracy 时间线与 README 数字对应 |
 | R12 | headless 回归 | `tests/regression/` 目录 + README 约定；`tests/CMakeLists.txt` 预留注释块；`MathUtils` FNV-1a/量化 hash 已实现 | W6-W7 | `regression_main.cpp` + `physics2d_regression` target + `golden/*.csv` + `scripts/compare_hash.py` | CI headless job 跑 10000 步 hash 对比；退出码 0/1/2/3/4 语义 |
 | R13 | 基准工具 | `bench/bench_broadphase.cpp` 占位 + `physics2d_bench` target 已存在（只依赖 core） | W6 | 参数化场景，输出 markdown/JSON 表格 | N=50/200/500/2000 实测数字进 README |
@@ -79,7 +79,7 @@
 
 | 周 | 提示词 | 要交付的文件（新增/填充） | 需要填的预留方法 |
 | --- | --- | --- | --- |
-| W2 | P05(完整)、P06 | `Core/Shape.h`、`Collision/{CircleShape,Manifold}.{h,cpp}`（Manifold 已有头）、`Collision/Plane` 解析路径 | `World::UpdateContacts`（先 O(N²) 遍历）、`Body::shape` 使用 |
+| W2 | P05(完整)、P06 | ✅ **已完成**：`Core/Shape.h`、`Collision/{ShapeTypes,CircleShape,PlaneShape,Analytic,Contact}.{h,cpp}`、`World` 形状池/接触列表/临时响应、Testbed 地面演示 | `World::UpdateContacts`（O(N²)）、`Synchronize`、`SolvePositionConstraints`（临时） |
 | W3 | P08 | `Solver/{ContactSolver}.{h,cpp}`、`Body::ApplyLinearImpulse`（已实现，直接用） | `World::SolveVelocityConstraints`（仅法向） |
 | W4 | P04、P07 | `Collision/{PolygonShape,SAT,Clipping}.{h,cpp}`、`ContactID` 对称映射 | `World::UpdateContacts` 走 SAT；W4 末做 R15 冷热拆分 |
 | W5 | P09、P10、P14 | `Solver/ContactSolver` 扩展：摩擦锥、累计钳制、warm start、restitution、split impulse；DebugUI 参数面板 | `World::WarmStart`、`World::SolvePositionConstraints` |
@@ -89,7 +89,7 @@
 
 ---
 
-## 5. 与设计文档的偏差登记（Week 1 实际选择）
+## 5. 与设计文档的偏差登记（Week 1-2 实际选择）
 
 | 设计文档 | 实际做法 | 理由 |
 | --- | --- | --- |
@@ -103,6 +103,13 @@
 | CI 用 vcpkg action | CI 直接 FetchContent + 系统 Ninja | 同上，依赖策略统一为 FetchContent |
 | clang-tidy 纳入 CI | 暂不纳入（本机无 LLVM/clang-tidy） | clang-format 可经 bootstrap 安装；clang-tidy 留到 W8 工具链收尾 |
 | `tests/regression` 在 W1 就有 target | 只建目录与约定文档，target 留到 W6-W7 | 物理行为还不存在时建空回归目标会让 CI 变成假绿 |
+| `Contact` 定义在 `Solver/Contact.h`（P08） | Week 2 移到 `Collision/Contact.h`，字段语义不变 | World 拥有接触列表（窄相输出），而 Core 不能依赖 Solver；移动头文件比让 Core→Solver 反向依赖更干净。W3 的 `ContactSolver` 直接 include 新路径 |
+| P06 包含 `CollideCircleAndPolygon` | Week 2 只做圆-圆、圆-平面；圆-多边形随 Week 4 的 `PolygonShape`（P04/P07）一起做 | Week 2 任务表（设计文档 5 章）只要求平面与圆-圆；多边形形状在 W4 才存在，提前做会先写一套临时的多边形表示 |
+| Week 2 的碰撞响应 | `SolvePositionConstraints` 为**临时**位置推出 + 法向速度投影（带 restitution），代码标 `TEMPORARY (Week 2)` | 设计文档 D3/D6 本身要求的临时方案：先用最粗暴的办法让球停下/弹起，把"为什么位置修正无法正确表达弹性碰撞"写进 devlog，作为 W3 Sequential Impulse 的动机 |
+| 平面形状的 AABB | 用一个 `kPlaneAabbExtent = 1e6 m` 的超大盒子参与 AABB 过滤 | 宽相在 W6 才实现（届时特判平面）；W2 的 O(N²)+AABB 过滤若给平面零尺寸会漏掉地面。超大盒子只影响 1 个静态 body，代价可忽略 |
+| 圆形的 `localCenter ≠ 0` | `ComputeCircleMass` 返回绕质心的惯性矩；`World::AttachShape` 用平行轴折算到 body 原点，但 body 原点即旋转中心 | W2 没有角动量响应（临时响应不处理 r×J），W3 求解器落地时再决定是否引入质心偏移的完整处理；现有 API 已预留 center 字段 |
+| Collision 依赖 Core（分层方向） | `PlaneShape.cpp` 为 `kPlaneAabbExtent` include 了 `Core/Settings.h`（纯常量头，只依赖 Math，无循环） | 设计文档要求魔法数字集中在 Settings.h；Settings 是叶子头文件，实际耦合为零。W6 拆宽相模块时若需要再引入 Collision 私有常量头 |
+| death tests 在 Release 下 | `TestSupport.h::DeathTestFixture` 在 `NDEBUG` 或沙箱禁止写临时文件时 `GTEST_SKIP()`（带原因） | assert 在 Release 被编译掉，"非法输入必须崩"不成立；CI 的 Debug job 真正执行这些断言测试 |
 
 ---
 

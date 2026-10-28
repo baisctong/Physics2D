@@ -18,7 +18,7 @@
 关键交付：`physics2d_core`（零第三方依赖）、`physics2d_testbed`（--smoke 可自动化）、
 `physics2d_bench` 占位、Week 2-8 预留接口与文档。
 
-## Week 2 · 平面 + 第一次"停下来"
+## Week 2 · 平面 + 第一次"停下来" ✅
 
 | 日 | 任务 | DoD |
 | --- | --- | --- |
@@ -31,6 +31,15 @@
 | D7 | 复盘 + tag `v0.2-plane-contact` | — |
 
 要填的预留点：R4 形状系统、R5 圆/平面解析路径、R7 `World::UpdateContacts`、R6 Contact 持久化。
+
+**Week 2 验收结果（2026-10-28，tag `v0.2-plane-contact`）**
+- 形状系统（Circle/Plane）+ World 形状池 + `AttachShape` 质量推导；解析碰撞 28 个测试通过；
+  Contact/ContactID 帧间持久化（Key 稳定、`isPersistent` 正确）；`Contact` 迁移到 `Collision/`。
+- 临时响应（位置推出 + 法向速度投影）使球稳定停在 y≈0.492（稳态穿透 0.00778 m = `kLinearSlop + g·dt²`）；
+  e=0 不弹、e>0 近似反弹，行为与"为什么位置修正无法正确表达弹性碰撞"已写入 devlog。
+- 单测 185（+65）；debug/release/sanitize 三 preset 全绿、零警告；testbed smoke `contacts=1`、exit 0。
+- 遗留技术债（W3/W5 清理）：`World::SolvePositionConstraints` 内 `TEMPORARY` 位置推出与速度投影；
+  O(N²) 配对枚举（W6 换 `IBroadPhase`）；圆-多边形碰撞（W4）。
 
 ## Week 3 · Sequential Impulse（只有法向）
 
