@@ -21,7 +21,7 @@ constexpr const char* kSpeedLabels[kSpeedCount] = {"1x", "0.5x", "0.25x"};
 constexpr float kMinGravityY = -50.0f;
 constexpr float kMaxGravityY = 10.0f;
 
-// Penetration is displayed in millimetres: the interesting Week 2 values are the
+// Penetration is displayed in millimetres: the interesting values are the
 // tolerated slop (5 mm) and the transient overlap during a landing, which are
 // unreadable as metres in a status panel.
 constexpr float kMillimetersPerMeter = 1000.0f;
@@ -59,7 +59,7 @@ void DebugUI::DrawControlPanel(World& world, Demo& currentDemo, const std::vecto
     ImGui::SetNextWindowSize(ImVec2(340.0f, 470.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("Testbed Controls");
 
-    ImGui::TextUnformatted("Physics2D testbed - Week 2");
+    ImGui::TextUnformatted("Physics2D testbed - Week 3");
     ImGui::Separator();
 
     if (!demoNames.empty()) {
@@ -114,8 +114,8 @@ void DebugUI::DrawControlPanel(World& world, Demo& currentDemo, const std::vecto
     ImGui::TextUnformatted("Display");
     ImGui::Checkbox("World axes", &display.showAxes);
     ImGui::Checkbox("Body AABBs", &display.showAabb);
-    // Week 2 contact visualisation: points are the manifold anchors, normals show the
-    // A->B direction the temporary response acts along.
+    // Contact visualisation: points are the manifold anchors; normals show the
+    // A->B direction along which the Sequential Impulse solver pushes the pair apart.
     ImGui::Checkbox("Contact points", &display.showContacts);
     ImGui::Checkbox("Contact normals", &display.showNormals);
     ImGui::Checkbox("Dear ImGui demo window", &m_showImGuiDemo);
@@ -152,7 +152,7 @@ void DebugUI::DrawStatusPanel(const World& world, const Demo& currentDemo, const
     ImGui::Text("Bodies: %d   Shapes: %d   Awake: %d", world.GetBodyCount(), world.GetShapeCount(),
                 world.GetAwakeBodyCount());
 
-    // Week 2 contact statistics. Only touching manifolds count; a pair with
+    // Contact statistics. Only touching manifolds count; a pair with
     // pointCount == 0 is separated and is not part of the contact list anyway, but
     // guarding keeps the panel correct if that changes later.
     int32_t touchingContacts = 0;

@@ -1,22 +1,22 @@
 #pragma once
 
-// p2::FallingBallDemo - Week 2 scene: a dynamic circle falling onto an infinite
-// static ground plane.
+// p2::FallingBallDemo - scene: a dynamic circle falling onto an infinite static
+// ground plane.
 //
-// Week 2 adds shapes and the analytic circle-plane narrow phase, so this scene now
-// demonstrates the whole pipeline end to end:
+// The scene demonstrates the pipeline end to end:
 //  - static ground body + PlaneShape(normal (0,1), offset 0), i.e. the surface
 //    y = 0, attached at the body origin (0,0);
 //  - dynamic circle body (radius 0.5 m, density 1 kg/m^2, so mass = pi * r^2)
 //    spawned at (0, 4) with restitution 0;
-//  - World::Step generates the contact and the temporary Week 2 position-level
-//    response pushes the ball out of the ground and removes its normal velocity.
-//    That response is temporary: momentum is not conserved and the restitution
-//    behaviour is only approximate until the Week 3 impulse solver / Week 5 split
-//    impulse. The demo's UI says so, so nobody mistakes the bounce for final
-//    behaviour.
+//  - World::Step generates the contact and, since Week 3, resolves it with the
+//    Sequential Impulse velocity solver (normal impulses with a restitution velocity
+//    threshold), so the bounce is physically meaningful: the impact speed is reversed
+//    by e, and approaches below kRestitutionVelocityThreshold are absorbed to keep
+//    resting contacts quiet. The position-level push-out is still the Week 2
+//    temporary code until split impulse lands in Week 5, but it no longer touches
+//    velocities.
 //  - the restitution slider drives World::SetRestitution live: e = 0 lands and
-//    stops, e = 0.5/0.8 bounce approximately.
+//    stops, e = 0.5/0.8 bounce with the expected energy loss.
 //
 // Contact points and contact normals are visualised by the generic World-level
 // overlay in main.cpp rather than here: the Demo interface (frozen by the brief)
@@ -59,7 +59,7 @@ class FallingBallDemo final : public Demo {
 
     BodyHandle m_ground;
     BodyHandle m_ball;
-    float m_restitution = 0.0f; // up to Week 5 this is the body material used by the temporary response
+    float m_restitution = 0.0f; // body material; contacts combine it as max(eA, eB)
     int32_t m_resetCount = 0;
 };
 

@@ -40,9 +40,9 @@ void FallingBallDemo::Setup(World& world) {
     CreateGround(world);
     CreateBall(world);
     std::printf("[FallingBall] static ground plane y=0 + dynamic circle r=0.5 at (0, %.1f), "
-                "density 1 kg/m^2, restitution %.2f; Week 2 response is position-level only "
-                "(momentum not conserved until Week 3/5)\n",
-                kDropHeight, m_restitution);
+                "density 1 kg/m^2, restitution %.2f; restitution is solved by the Week 3 "
+                "Sequential Impulse solver (threshold %.1f m/s), e=0 lands and stops, e>0 bounces\n",
+                kDropHeight, m_restitution, kRestitutionVelocityThreshold);
 }
 
 void FallingBallDemo::Update(World& world, float /*dt*/) {
@@ -53,8 +53,8 @@ void FallingBallDemo::Update(World& world, float /*dt*/) {
         return;
     }
     if (world.GetPosition(m_ball).y < kFallThroughResetY) {
-        // Only reachable if the narrow phase or the temporary response regresses:
-        // make it loud rather than letting the ball disappear off screen.
+        // Only reachable if the narrow phase or the solver regresses: make it loud
+        // rather than letting the ball disappear off screen.
         std::fprintf(stderr,
                      "[FallingBall] ball fell through the plane (y < %.1f) - physics regression, "
                      "restarting scene\n",
@@ -78,9 +78,9 @@ void FallingBallDemo::Draw(Renderer& renderer, const World& world) {
     renderer.DrawCircle(position, kBallRadius, kBallColor, kCircleSegments);
     renderer.DrawPoint(position, kBallCenterColor, 0.05f);
 
-    // Velocity arrow: shows the free fall accelerating, then collapsing to zero on
-    // impact and (for e > 0) reversing, which is exactly what the Week 2 response
-    // should look like.
+    // Velocity arrow: shows the free fall accelerating, then the impulse solver
+    // reversing it on impact (e > 0) or zeroing it (e = 0); the arrow is the quickest
+    // visual check that the solver ran at all.
     const Vec2 velocity = world.GetLinearVelocity(m_ball);
     renderer.DrawArrow(position, position + velocity * kVelocityArrowScale, kVelocityColor);
 }
@@ -110,9 +110,9 @@ void FallingBallDemo::Ui(World& world) {
     ImGui::Text("Contacts: %d   max penetration: %.2f mm", touchingContacts,
                 maxPenetration * kMillimetersPerMeter);
 
-    // e = 0 must land and stop; higher values bounce approximately. The bounce is not
-    // physically clean yet because Week 2 has no impulse solver - this is the
-    // documented temporary behaviour, not a bug (design doc Week 2 D6).
+    // e = 0 must land and stop; higher values bounce with the impact speed scaled by e.
+    // Since Week 3 the Sequential Impulse solver applies restitution only above the
+    // threshold speed, so a resting contact does not buzz even with e > 0.
     float restitution = m_restitution;
     if (ImGui::SliderFloat("Restitution (e)", &restitution, 0.0f, 1.0f, "%.2f")) {
         m_restitution = restitution;

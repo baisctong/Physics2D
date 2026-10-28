@@ -1,5 +1,5 @@
 // physics2d_testbed - interactive testbed entry point (Week 1 D5/D6, extended in
-// Week 2 with the contact overlay and the plane-ground scene).
+// Week 2 with the contact overlay and in Week 3 with multiple selectable scenes).
 //
 // Responsibilities (and nothing else):
 //   1. Create the GLFW window / OpenGL 3.3 core context and initialise Dear ImGui
@@ -15,11 +15,16 @@
 // Fixed timestep: p2::StepAccumulator turns the variable frame time into a whole
 // number of 1/60 s steps (Section 4.3), at most kMaxStepsPerFrame per frame to stop
 // the "death spiral" where a slow frame schedules even more work. The leftover
-// fraction is available as interpolation alpha but Week 1 does not use it yet: the
-// design document schedules render interpolation for Week 7, and demos would need
+// fraction is available as interpolation alpha but the testbed does not use it yet:
+// the design document schedules render interpolation for Week 7, and demos would need
 // previous-state caching that does not exist until then.
 //
 // CLI:
+//   --demo NAME choose the initial scene (FallingBall | SphereStack, default
+//               FallingBall). Matching is case-insensitive and ignores spaces,
+//               underscores and hyphens, so "spherestack" and "Sphere Stack" both
+//               work. An unknown name prints the available list and exits with code
+//               2 so smoke automation can distinguish a typo from a physics failure.
 //   --smoke N   render N frames, print a machine-checkable summary, exit 0.
 //               In smoke mode the loop feeds the accumulator a deterministic
 //               1/60 s per frame, so N frames == N physics steps regardless of
@@ -32,6 +37,7 @@
 #include "GLLoader.h"
 #include "Renderer.h"
 #include "demos/FallingBall.h"
+#include "demos/SphereStack.h"
 
 #include "physics2d/Core/Settings.h"
 #include "physics2d/Core/TimeStep.h"
@@ -58,6 +64,9 @@ constexpr int kExitFailure = 1;
 // Environment-unsupported is distinct from a failing test: the smoke harness uses
 // it to say "this machine has no desktop/OpenGL 3.3", which is not a code bug.
 constexpr int kExitEnvironmentUnsupported = 2;
+// Unknown scene name shares code 2 by contract (task card): the smoke harness treats
+// it as "the requested configuration does not exist here", not as a physics failure.
+constexpr int kExitUnknownDemo = 2;
 
 constexpr int kInitialWindowWidth = 1280;
 constexpr int kInitialWindowHeight = 800;
@@ -78,14 +87,18 @@ struct CommandLineOptions {
     int smokeFrames = 0; // 0 means interactive mode
     bool hidden = false;
     bool helpRequested = false;
+    std::string demoName = "FallingBall"; // scene id, matched against Demo::Name()
 };
 
 // The binary name is spelled out instead of using argv[0]: the repository path may
 // contain non-ASCII characters, and printing argv[0] to a GBK/UTF-8 mixed console
 // turns the usage line into mojibake.
 void PrintUsage() {
-    std::printf("Usage: physics2d_testbed [--smoke N] [--hidden] [--help]\n"
-                "  --smoke N   render N frames, print a summary and exit (0 = pass, 2 = no GL environment)\n"
+    std::printf("Usage: physics2d_testbed [--demo NAME] [--smoke N] [--hidden] [--help]\n"
+                "  --demo NAME start in this scene (FallingBall | SphereStack; default FallingBall).\n"
+                "              Matching is case-insensitive and ignores spaces/underscores.\n"
+                "  --smoke N   render N frames, print a summary and exit (0 = pass, 2 = no GL environment\n"
+                "              or unknown demo name)\n"
                 "  --hidden    hide the window (rendering still happens)\n"
                 "  --help      show this help\n");
 }
@@ -108,6 +121,12 @@ void PrintUsage() {
                 return false;
             }
             options.smokeFrames = static_cast<int>(frames);
+        } else if (std::strcmp(argument, "--demo") == 0) {
+            if (argumentIndex + 1 >= argc) {
+                std::fprintf(stderr, "[testbed] --demo requires a scene name, e.g. --demo SphereStack\n");
+                return false;
+            }
+            options.demoName = argv[++argumentIndex];
         } else if (std::strcmp(argument, "--help") == 0 || std::strcmp(argument, "-h") == 0) {
             options.helpRequested = true;
             return true;
@@ -122,6 +141,68 @@ void PrintUsage() {
 void GlfwErrorCallback(int errorCode, const char* description) {
     std::fprintf(stderr, "[testbed] GLFW error %d: %s\n", errorCode,
                  description != nullptr ? description : "(no description)");
+}
+
+// ---- scene-name matching ------------------------------------------------------
+// The UI labels contain spaces ("Sphere Stack") while the CLI ids users type are
+// compact ("SphereStack"), so the comparison ignores spaces/underscores/hyphens and
+// folds ASCII case. Scene names are our own ASCII identifiers, therefore a hand-rolled
+// fold is enough and avoids locale surprises from std::tolower(char).
+[[nodiscard]] char FoldSceneNameCharacter(char character) noexcept {
+    if (character >= 'A' && character <= 'Z') {
+        return static_cast<char>(character - 'A' + 'a');
+    }
+    return character;
+}
+
+[[nodiscard]] bool IsSceneNameSeparator(char character) noexcept {
+    return character == ' ' || character == '_' || character == '-';
+}
+
+[[nodiscard]] bool MatchesSceneName(const char* displayName, const char* requestedName) noexcept {
+    std::size_t displayIndex = 0;
+    std::size_t requestedIndex = 0;
+    for (;;) {
+        while (IsSceneNameSeparator(displayName[displayIndex])) {
+            ++displayIndex;
+        }
+        while (IsSceneNameSeparator(requestedName[requestedIndex])) {
+            ++requestedIndex;
+        }
+        const char displayCharacter = displayName[displayIndex];
+        const char requestedCharacter = requestedName[requestedIndex];
+        if (displayCharacter == '\0' || requestedCharacter == '\0') {
+            // Both must end together: "Sphere" must not match "SphereStack".
+            return displayCharacter == '\0' && requestedCharacter == '\0';
+        }
+        if (FoldSceneNameCharacter(displayCharacter) != FoldSceneNameCharacter(requestedCharacter)) {
+            return false;
+        }
+        ++displayIndex;
+        ++requestedIndex;
+    }
+}
+
+// Machine-readable scene id for the one-line smoke summary: strip the spaces from the
+// UI label so the line stays simple key=value tokens ("demo=SphereStack").
+[[nodiscard]] std::string CompactSceneName(const char* displayName) {
+    std::string compactName;
+    for (const char* character = displayName; *character != '\0'; ++character) {
+        if (!IsSceneNameSeparator(*character)) {
+            compactName.push_back(*character);
+        }
+    }
+    return compactName;
+}
+
+[[nodiscard]] int FindDemoIndex(const std::vector<std::unique_ptr<p2::Demo>>& demos,
+                                const std::string& requestedName) {
+    for (int demoIndex = 0; demoIndex < static_cast<int>(demos.size()); ++demoIndex) {
+        if (MatchesSceneName(demos[static_cast<std::size_t>(demoIndex)]->Name(), requestedName.c_str())) {
+            return demoIndex;
+        }
+    }
+    return -1;
 }
 
 // ---- contact debug overlay (Week 2) -----------------------------------------
@@ -256,6 +337,32 @@ int RunTestbed(const CommandLineOptions& options) {
     const bool smokeMode = options.smokeFrames > 0;
     const int environmentExitCode = smokeMode ? kExitEnvironmentUnsupported : kExitFailure;
 
+    // ---- demo registry + CLI scene selection --------------------------------
+    // Built before GLFW/GL: an unknown --demo is a configuration error and must be
+    // reported (exit code 2 by contract) even on a machine that cannot open a window.
+    std::vector<std::unique_ptr<p2::Demo>> demos;
+    demos.push_back(std::make_unique<p2::FallingBallDemo>());
+    demos.push_back(std::make_unique<p2::SphereStackDemo>());
+    std::vector<const char*> demoNames;
+    demoNames.reserve(demos.size());
+    for (const std::unique_ptr<p2::Demo>& demo : demos) {
+        demoNames.push_back(demo->Name());
+    }
+
+    const int initialDemoIndex = FindDemoIndex(demos, options.demoName);
+    if (initialDemoIndex < 0) {
+        std::fprintf(stderr,
+                     "[testbed] unknown demo '%s'\n[testbed] available demos:", options.demoName.c_str());
+        for (const char* demoName : demoNames) {
+            std::fprintf(stderr, " '%s'", demoName);
+        }
+        std::fprintf(stderr,
+                     "\n[testbed] scene names are matched case-insensitively; spaces/underscores/hyphens are "
+                     "ignored\n");
+        return kExitUnknownDemo;
+    }
+    int selectedDemo = initialDemoIndex;
+
     glfwSetErrorCallback(&GlfwErrorCallback);
     GlfwRuntime glfwRuntime;
     if (!glfwRuntime.Initialize()) {
@@ -323,18 +430,9 @@ int RunTestbed(const CommandLineOptions& options) {
         return (smokeMode && environmentIssue) ? kExitEnvironmentUnsupported : kExitFailure;
     }
 
-    // ---- demo registry ------------------------------------------------------
-    // Week 2 still ships exactly one scene; the container and iteration are the shape
-    // the later weeks' scene list uses, so adding SphereStack/Dominoes is one line.
-    std::vector<std::unique_ptr<p2::Demo>> demos;
-    demos.push_back(std::make_unique<p2::FallingBallDemo>());
-    std::vector<const char*> demoNames;
-    demoNames.reserve(demos.size());
-    for (const std::unique_ptr<p2::Demo>& demo : demos) {
-        demoNames.push_back(demo->Name());
-    }
-    int selectedDemo = 0;
-
+    // ---- scene setup --------------------------------------------------------
+    // The registry and the CLI selection were resolved above; this is the only part
+    // that needs the (now fully initialized) simulation/render stack.
     p2::World world;
     demos[static_cast<std::size_t>(selectedDemo)]->Setup(world);
 
@@ -509,13 +607,16 @@ int RunTestbed(const CommandLineOptions& options) {
     if (smokeMode) {
         const double averageFrameMilliseconds =
             frameIndex > 0 ? totalFrameMilliseconds / static_cast<double>(frameIndex) : 0.0;
-        // One machine-readable line for the Lead's automated verification. Week 2 adds
-        // the shape/contact counts: a resting ball must show contacts >= 1 at the end
-        // of the run. The per-body lines below give the final ball height, which the
-        // timing statistics cannot show.
-        std::printf("[smoke] frames=%d physics_steps=%d bodies=%d shapes=%d contacts=%d avg_frame_ms=%.3f\n",
-                    frameIndex, totalPhysicsSteps, world.GetBodyCount(), world.GetShapeCount(),
-                    world.GetContactCount(), averageFrameMilliseconds);
+        const p2::Demo& reportedDemo = *demos[static_cast<std::size_t>(selectedDemo)];
+        const std::string compactDemoName = CompactSceneName(reportedDemo.Name());
+        // One machine-readable line for automated verification: scene id, counts and
+        // timing. The per-body / per-contact lines below carry the state a verdict
+        // actually needs (final heights and velocities, and which pairs still touch).
+        std::printf(
+            "[smoke] demo=%s frames=%d physics_steps=%d bodies=%d shapes=%d contacts=%d avg_frame_ms=%.3f\n",
+            compactDemoName.c_str(), frameIndex, totalPhysicsSteps, world.GetBodyCount(),
+            world.GetShapeCount(), world.GetContactCount(), averageFrameMilliseconds);
+
         constexpr int kMaxBodiesPrinted = 8;
         int printedBodyCount = 0;
         for (const p2::Body& body : world.GetBodies()) {
@@ -527,6 +628,27 @@ int RunTestbed(const CommandLineOptions& options) {
             std::printf("[smoke] body='%s' position=(%.3f, %.3f) velocity=(%.3f, %.3f)\n",
                         body.debugName.c_str(), position.x, position.y, velocity.x, velocity.y);
             if (++printedBodyCount >= kMaxBodiesPrinted) {
+                break;
+            }
+        }
+
+        // Contact state: pair names, manifold point count and penetration in mm. A
+        // resting stack prints its three contacts here, which is how the log tells a
+        // standing stack apart from a collapsed one that separated into free fall.
+        constexpr int kMaxContactsPrinted = 8;
+        int printedContactCount = 0;
+        for (const p2::Contact& contact : world.GetContacts()) {
+            if (!contact.manifold.IsTouching()) {
+                continue;
+            }
+            const p2::Body* bodyA = world.GetBody(contact.bodyA);
+            const p2::Body* bodyB = world.GetBody(contact.bodyB);
+            std::printf("[smoke] contact '%s'|'%s' points=%d penetration=%.3fmm normal=(%.3f, %.3f)\n",
+                        bodyA != nullptr ? bodyA->debugName.c_str() : "?",
+                        bodyB != nullptr ? bodyB->debugName.c_str() : "?", contact.manifold.pointCount,
+                        contact.manifold.penetration * 1000.0f, contact.manifold.normal.x,
+                        contact.manifold.normal.y);
+            if (++printedContactCount >= kMaxContactsPrinted) {
                 break;
             }
         }
