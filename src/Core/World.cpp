@@ -1,19 +1,33 @@
-// p2::World — body ownership and the fixed simulation pipeline (Section 4.6,
-// Week 1 D6). See World.h for the frozen 11-phase pipeline contract.
+// p2::World — body/shape ownership and the fixed simulation pipeline
+// (Section 4.6; Week 2 adds shapes, contacts and a temporary response layer).
+// See World.h for the frozen pipeline and API contracts.
 //
-// Week 1 really runs phases 1 (IntegrateForces), 7 (IntegratePositions) and 11
-// (Validate); phases 2-6 and 8-10 are empty hooks whose only purpose is to pin
-// the documented ordering so later weeks cannot insert a phase in the wrong
-// place. Body lifespan is generation-checked (IDPool), so a destroyed body's
-// handle goes stale instead of aliasing the slot's next occupant.
+// Week 2 really runs phases 1 (IntegrateForces), 3 (UpdateContacts), 7
+// (IntegratePositions), 8 (SolvePositionConstraints, TEMPORARY), 9
+// (Synchronize) and 11 (Validate). Phases 2/4/5/6/10 stay empty hooks so the
+// documented ordering can never regress while the solver/island work lands.
+//
+// Scale note: pair enumeration is O(N^2) with an AABB pre-filter on purpose.
+// Week 6 replaces only the enumeration with IBroadPhase; the contact data
+// contract and the narrow-phase dispatch below stay exactly the same.
 
 #include "physics2d/Core/World.h"
 
+#include "physics2d/Collision/Analytic.h"
+#include "physics2d/Collision/CircleShape.h"
+#include "physics2d/Collision/ContactID.h"
+#include "physics2d/Collision/PlaneShape.h"
+#include "physics2d/Collision/ShapeTypes.h"
+#include "physics2d/Math/MathUtils.h"
+#include "physics2d/Math/Vec2.h"
+
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <utility>
+#include <vector>
 
 namespace p2 {
 
@@ -40,6 +54,51 @@ namespace {
         return false;
     }
     return true;
+}
+
+// Allocates a shape slot and copies `shape` into it. Same slot-reuse discipline
+// as the body pool: index == ShapeHandle::index, generation checked on use.
+[[nodiscard]] ShapeHandle AllocateShapeSlot(std::vector<Shape>& shapes, IDPool& shapeIds,
+                                            const Shape& shape) {
+    const int32_t index = shapeIds.Allocate();
+    if (index >= static_cast<int32_t>(shapes.size())) {
+        shapes.emplace_back();
+    }
+    Shape& slot = shapes[static_cast<std::size_t>(index)];
+    slot = shape;
+    return ShapeHandle{index, shapeIds.GetGeneration(index)};
+}
+
+// Inherits per-point accumulated impulses from the previous frame's contact for
+// the same body pair (Section 6.3, P09 warm-start preparation). Matching is by
+// ContactID::Key(): the physical feature must be the same point, otherwise the
+// cached impulse would be applied to the wrong anchor. The pair is persistent
+// only when EVERY new point found its predecessor.
+[[nodiscard]] bool MatchAndInheritImpulses(Contact& contact, const std::vector<Contact>& previousContacts) {
+    for (const Contact& previous : previousContacts) {
+        if (previous.bodyA != contact.bodyA || previous.bodyB != contact.bodyB) {
+            continue;
+        }
+        bool allPointsMatched = true;
+        for (int32_t pointIndex = 0; pointIndex < contact.manifold.pointCount; ++pointIndex) {
+            ContactPoint& point = contact.manifold.points[pointIndex];
+            bool matched = false;
+            for (int32_t oldPointIndex = 0; oldPointIndex < previous.manifold.pointCount; ++oldPointIndex) {
+                const ContactPoint& oldPoint = previous.manifold.points[oldPointIndex];
+                if (oldPoint.id.Key() == point.id.Key()) {
+                    point.normalImpulse = oldPoint.normalImpulse;
+                    point.tangentImpulse = oldPoint.tangentImpulse;
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                allPointsMatched = false;
+            }
+        }
+        return allPointsMatched;
+    }
+    return false;
 }
 
 } // namespace
@@ -70,6 +129,9 @@ BodyHandle World::CreateBody(const BodyDef& def) {
     Body& body = m_bodies[static_cast<std::size_t>(index)];
     body.handle = BodyHandle{index, m_bodyIds.GetGeneration(index)};
     body.Initialize(def);
+    // A body without a collider is a point; this keeps the contact pair filter
+    // well-defined until AttachShape replaces it with the real bounds.
+    body.aabb = AABB{body.xf.p, body.xf.p};
     return body.handle;
 }
 
@@ -82,6 +144,23 @@ void World::DestroyBody(BodyHandle handle) {
     }
 
     Body& body = m_bodies[static_cast<std::size_t>(handle.index)];
+    // The body owns its shape slot: release it so the shape pool does not leak.
+    if (IsValidShape(body.shape)) {
+        m_shapeIds.Release(body.shape.index);
+    }
+    body.shape = ShapeHandle{};
+    // Drop cached contacts referencing this body so readers never observe a
+    // contact with a handle that has just gone stale. The list is rebuilt at the
+    // next Step anyway.
+    const auto referencesDestroyed = [&handle](const Contact& contact) {
+        return contact.bodyA == handle || contact.bodyB == handle;
+    };
+    m_contacts.erase(std::remove_if(m_contacts.begin(), m_contacts.end(), referencesDestroyed),
+                     m_contacts.end());
+    m_previousContacts.erase(
+        std::remove_if(m_previousContacts.begin(), m_previousContacts.end(), referencesDestroyed),
+        m_previousContacts.end());
+
     body.handle = BodyHandle{}; // a dead slot no longer advertises a handle
     body.isAwake = false;
     m_bodyIds.Release(handle.index);
@@ -107,6 +186,134 @@ const Body* World::GetBody(BodyHandle handle) const {
         return nullptr;
     }
     return GetBodyChecked(handle);
+}
+
+// ---------------------------------------------------------------------------
+// Shapes (Week 2)
+// ---------------------------------------------------------------------------
+
+ShapeHandle World::CreateCircleShape(float radius, Vec2 localCenter) {
+    Shape shape;
+    shape.type = ShapeType::Circle;
+    shape.circle.radius = radius;
+    shape.circle.localCenter = localCenter;
+    // Delegate validity to the shape itself so the acceptance criteria live in
+    // one place (Collision module); World only turns the rejection into an
+    // invalid handle + debug assert (core has no exception path).
+    if (!shape.IsValid()) {
+        assert(false &&
+               "World::CreateCircleShape: radius must be finite and > 0, localCenter must be finite");
+        return ShapeHandle{};
+    }
+    return AllocateShapeSlot(m_shapes, m_shapeIds, shape);
+}
+
+ShapeHandle World::CreatePlaneShape(Vec2 normal, float offset) {
+    Shape shape;
+    shape.type = ShapeType::Plane;
+    shape.plane.normal = normal;
+    shape.plane.offset = offset;
+    if (!shape.IsValid()) {
+        assert(false && "World::CreatePlaneShape: normal must be unit length and finite, offset finite");
+        return ShapeHandle{};
+    }
+    return AllocateShapeSlot(m_shapes, m_shapeIds, shape);
+}
+
+bool World::AttachShape(BodyHandle bodyHandle, ShapeHandle shapeHandle) {
+    if (!IsValid(bodyHandle) || !IsValidShape(shapeHandle)) {
+        return false;
+    }
+
+    Body& body = *GetBodyMutable(bodyHandle);
+    const Shape& shape = *GetShapeMutable(shapeHandle);
+
+    // A plane is an infinite half-space with infinite mass: only a static body
+    // can own one. Attaching it to a dynamic body would also make the derived
+    // mass properties meaningless, so this is a hard misuse (assert + reject).
+    if (shape.type == ShapeType::Plane && body.type != BodyType::Static) {
+        assert(false && "World::AttachShape: a PlaneShape can only be attached to a Static body");
+        return false;
+    }
+
+    // Derive the new mass properties BEFORE mutating anything: a rejected attach
+    // must leave the previous shape and mass properties untouched (Section 3.4).
+    float newMass = 0.0f;
+    float newInertia = 0.0f;
+    float newInvMass = 0.0f;
+    float newInvInertia = 0.0f;
+    if (body.type == BodyType::Dynamic) {
+        if (!(std::isfinite(body.density) && body.density > 0.0f)) {
+            assert(false && "World::AttachShape: attaching to a Dynamic body requires density > 0");
+            return false;
+        }
+        const MassData massData = ComputeShapeMass(shape, body.density);
+        if (!(std::isfinite(massData.mass) && massData.mass > 0.0f) || !std::isfinite(massData.inertia) ||
+            massData.inertia < 0.0f || !p2::IsValid(massData.center)) {
+            assert(false && "World::AttachShape: shape produced non-physical mass data");
+            return false;
+        }
+        newMass = massData.mass;
+        newInvMass = 1.0f / newMass;
+        // Parallel-axis transfer from the shape centre to the body origin (the
+        // rotation centre in Weeks 1-3): I_origin = I_centre + m * |centre|^2.
+        // A body-local centre-of-mass offset is deferred to the Week 4 refactor;
+        // this is exact for a centred circle (centre == 0) and approximate for an
+        // off-centre one (documented Week 2 limitation).
+        newInertia = massData.inertia + newMass * LengthSquared(massData.center);
+        newInvInertia = body.fixedRotation ? 0.0f : (1.0f / newInertia);
+    }
+    // Static/kinematic bodies stay infinite-mass: the four values remain 0.
+
+    // Commit: release the previously attached shape slot (one shape per body),
+    // then store the new handle and mass properties.
+    if (IsValidShape(body.shape) && body.shape != shapeHandle) {
+        m_shapeIds.Release(body.shape.index);
+    }
+    body.shape = shapeHandle;
+    body.mass = newMass;
+    body.inertia = newInertia;
+    body.invMass = newInvMass;
+    body.invInertia = newInvInertia;
+    // Update immediately: UpdateContacts' AABB filter runs before the first
+    // Synchronize phase of the step that follows the attach.
+    body.aabb = ComputeShapeAABB(shape, body.xf);
+    return true;
+}
+
+void World::DestroyShape(ShapeHandle shapeHandle) {
+    // Stale/unknown handles are ignored on purpose (destruction is idempotent),
+    // matching DestroyBody's policy.
+    if (!IsValidShape(shapeHandle)) {
+        return;
+    }
+    // A shape referenced by a live body must not be freed: the body would keep a
+    // dangling ShapeHandle. Destroy the body (which detaches) or replace the
+    // shape instead - this is a caller bug, not something to silently repair.
+    const int32_t bodyCount = static_cast<int32_t>(m_bodies.size());
+    for (int32_t index = 0; index < bodyCount; ++index) {
+        if (m_bodyIds.IsValid(index) && m_bodies[static_cast<std::size_t>(index)].shape == shapeHandle) {
+            assert(false && "World::DestroyShape: shape is still attached to a body");
+            return;
+        }
+    }
+    m_shapeIds.Release(shapeHandle.index);
+}
+
+bool World::IsValidShape(ShapeHandle shape) const {
+    if (!shape.IsValid()) {
+        return false;
+    }
+    const int32_t index = shape.index;
+    return m_shapeIds.IsValidIndex(index) && m_shapeIds.IsValid(index) &&
+           m_shapeIds.GetGeneration(index) == shape.generation;
+}
+
+const Shape* World::GetShape(ShapeHandle shape) const {
+    if (!IsValidShape(shape)) {
+        return nullptr;
+    }
+    return &m_shapes[static_cast<std::size_t>(shape.index)];
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +343,13 @@ void World::SetTransform(BodyHandle handle, Vec2 position, float angle) {
     Body* body = GetBodyMutable(handle);
     body->xf.p = position;
     body->xf.q.Set(angle);
+    // Keep the cached AABB consistent immediately: UpdateContacts may run before
+    // the next Synchronize phase, and a teleport must not use stale bounds.
+    if (IsValidShape(body->shape)) {
+        body->aabb = ComputeShapeAABB(*GetShapeMutable(body->shape), body->xf);
+    } else {
+        body->aabb = AABB{body->xf.p, body->xf.p};
+    }
     // Week 7 sleep hook: teleporting a body invalidates its sleep history. A
     // static body is always asleep - it has no velocity to integrate anyway.
     if (body->type != BodyType::Static) {
@@ -217,6 +431,38 @@ void World::SetUserData(BodyHandle handle, void* userData) {
 }
 
 // ---------------------------------------------------------------------------
+// Material properties (Week 2)
+// ---------------------------------------------------------------------------
+
+float World::GetFriction(BodyHandle handle) const {
+    const Body* body = GetBody(handle);
+    return body != nullptr ? body->friction : 0.0f;
+}
+
+void World::SetFriction(BodyHandle handle, float friction) {
+    assert(std::isfinite(friction) && friction >= 0.0f &&
+           "World::SetFriction: friction must be finite and >= 0");
+    if (!IsValid(handle) || !std::isfinite(friction) || friction < 0.0f) {
+        return;
+    }
+    GetBodyMutable(handle)->friction = friction;
+}
+
+float World::GetRestitution(BodyHandle handle) const {
+    const Body* body = GetBody(handle);
+    return body != nullptr ? body->restitution : 0.0f;
+}
+
+void World::SetRestitution(BodyHandle handle, float restitution) {
+    assert(std::isfinite(restitution) && restitution >= 0.0f &&
+           "World::SetRestitution: restitution must be finite and >= 0");
+    if (!IsValid(handle) || !std::isfinite(restitution) || restitution < 0.0f) {
+        return;
+    }
+    GetBodyMutable(handle)->restitution = restitution;
+}
+
+// ---------------------------------------------------------------------------
 // External forces / impulses
 // ---------------------------------------------------------------------------
 
@@ -265,20 +511,20 @@ void World::Step(float dt, int32_t velocityIterations, int32_t positionIteration
     // phases in later weeks, do not move a call - only replace its body.
     IntegrateForces(dt);        //  1. force/gravity -> velocity            [done]
     UpdateBroadPhase(dt);       //  2. broad phase update                   [reserved Week 6]
-    UpdateContacts();           //  3. narrow phase / contact generation    [reserved Weeks 2-5]
+    UpdateContacts();           //  3. narrow phase / contact generation     [done W2, O(N^2)]
     BuildIslands();             //  4. island construction                  [reserved Week 7]
     WarmStart();                //  5. warm start                           [reserved Week 5]
     SolveVelocityConstraints(); //  6. velocity iterations                  [reserved Weeks 3-5]
     IntegratePositions(dt);     //  7. velocity -> position (semi-implicit) [done]
-    SolvePositionConstraints(); //  8. position iterations (split impulse)  [reserved Week 5]
-    Synchronize();              //  9. transform/AABB synchronisation       [reserved Week 6]
+    SolvePositionConstraints(); //  8. position iterations (split impulse)  [TEMPORARY W2]
+    Synchronize();              //  9. transform/AABB synchronisation       [done W2]
     UpdateSleep(dt);            // 10. sleep evaluation                     [reserved Week 7]
     Validate();                 // 11. debug validation (NaN/Inf scan)      [done]
 }
 
 void World::SetBroadPhase(std::unique_ptr<IBroadPhase> broadPhase) {
-    // World owns the object; nullptr explicitly disables broad-phase work, which
-    // is the Week 1 state (no shapes, no proxies).
+    // World owns the object; nullptr explicitly disables broad-phase work. Week
+    // 2 always uses the O(N^2) enumeration in UpdateContacts.
     m_broadPhase = std::move(broadPhase);
 }
 
@@ -300,13 +546,12 @@ int32_t World::GetAwakeBodyCount() const {
 }
 
 int32_t World::GetIslandCount() const noexcept {
-    // RESERVED (Week 7): islands only exist once contacts do.
+    // RESERVED (Week 7): islands only exist once the island builder lands.
     return 0;
 }
 
 int32_t World::GetContactCount() const noexcept {
-    // RESERVED (Weeks 2+): no contacts exist in Week 1.
-    return 0;
+    return static_cast<int32_t>(m_contacts.size());
 }
 
 // ---------------------------------------------------------------------------
@@ -314,8 +559,14 @@ int32_t World::GetContactCount() const noexcept {
 // ---------------------------------------------------------------------------
 
 void World::Clear() {
-    m_bodyIds.Clear();
+    // Contacts reference bodies by handle, so they must go before the bodies
+    // (and shapes before the shape pool) to leave no stale references behind.
+    m_contacts.clear();
+    m_previousContacts.clear();
+    m_shapes.clear();
+    m_shapeIds.Clear();
     m_bodies.clear();
+    m_bodyIds.Clear();
     // RESERVED (Week 6): the broad phase will need its proxies cleared here once
     // IBroadPhase grows a reset entry point; until then it holds no state.
 }
@@ -347,6 +598,27 @@ void World::CheckSane() const {
                      static_cast<double>(body.force.x), static_cast<double>(body.force.y),
                      static_cast<double>(body.torque));
         assert(false && "World::CheckSane: non-finite body state (NaN/Inf)");
+    }
+
+    // Contact data is narrow-phase output: a NaN here would propagate into the
+    // solver / response on the next step, so validate it with the same scan.
+    const int32_t contactCount = static_cast<int32_t>(m_contacts.size());
+    for (int32_t contactIndex = 0; contactIndex < contactCount; ++contactIndex) {
+        const Contact& contact = m_contacts[static_cast<std::size_t>(contactIndex)];
+        const Manifold& manifold = contact.manifold;
+        const bool contactOk = p2::IsValid(manifold.normal) && std::isfinite(manifold.penetration) &&
+                               std::isfinite(contact.friction) && std::isfinite(contact.restitution) &&
+                               manifold.pointCount >= 0 && manifold.pointCount <= kMaxManifoldPoints;
+        if (contactOk) {
+            continue;
+        }
+        std::fprintf(stderr,
+                     "World::CheckSane: contact %d/%d has invalid manifold state (pointCount=%d "
+                     "normal=(%g, %g) penetration=%g)\n",
+                     contact.bodyA.index, contact.bodyB.index, manifold.pointCount,
+                     static_cast<double>(manifold.normal.x), static_cast<double>(manifold.normal.y),
+                     static_cast<double>(manifold.penetration));
+        assert(false && "World::CheckSane: non-finite contact state (NaN/Inf)");
     }
 #endif
 }
@@ -389,14 +661,84 @@ void World::IntegrateForces(float dt) {
 void World::UpdateBroadPhase(float dt) {
     // RESERVED (Week 6): with a broad phase installed, update/insert the fat
     // AABB of every live body and enumerate candidate pairs into UpdateContacts.
-    // Week 1 has no shape geometry, so there is nothing to insert.
+    // Week 2 uses the O(N^2) enumeration below instead.
     (void)dt;
 }
 
 void World::UpdateContacts() {
-    // RESERVED (Weeks 2-5): run the narrow phase on the candidate pairs from the
-    // broad phase, regenerate manifolds, and (Week 5) inherit per-point impulses
-    // by ContactID for warm starting.
+    // Rebuild the contact list from scratch every step (Section 6.3). The old
+    // list is kept for one frame: it is the persistence/warm-start source.
+    m_previousContacts = std::move(m_contacts);
+    m_contacts.clear();
+
+    const int32_t bodyCount = static_cast<int32_t>(m_bodies.size());
+    for (int32_t indexA = 0; indexA < bodyCount; ++indexA) {
+        if (!m_bodyIds.IsValid(indexA)) {
+            continue;
+        }
+        Body& bodyA = m_bodies[static_cast<std::size_t>(indexA)];
+        if (!IsValidShape(bodyA.shape)) {
+            continue; // no collider -> cannot generate contacts
+        }
+
+        // Fixed i < j iteration: every pair is visited once and contact order is
+        // independent of insertion history (determinism, Section 7.4). A is
+        // always the lower handle index, so the narrow-phase normal convention
+        // maps directly onto Contact::bodyA/bodyB.
+        for (int32_t indexB = indexA + 1; indexB < bodyCount; ++indexB) {
+            if (!m_bodyIds.IsValid(indexB)) {
+                continue;
+            }
+            Body& bodyB = m_bodies[static_cast<std::size_t>(indexB)];
+            if (!IsValidShape(bodyB.shape)) {
+                continue;
+            }
+
+            // Infinite-mass pairs never generate contacts: nothing could be
+            // pushed apart, and the response is mass-weighted.
+            if (!bodyA.IsDynamic() && !bodyB.IsDynamic()) {
+                continue;
+            }
+
+            // Broad-phase stand-in: cheap AABB rejection (Week 6 replaces the
+            // enumeration, not this filter). Touching counts as overlap.
+            if (!Overlaps(bodyA.aabb, bodyB.aabb)) {
+                continue;
+            }
+
+            const Shape& shapeA = m_shapes[static_cast<std::size_t>(bodyA.shape.index)];
+            const Shape& shapeB = m_shapes[static_cast<std::size_t>(bodyB.shape.index)];
+
+            // Week 2 narrow phase: analytic circle paths only. Polygon pairs
+            // arrive in Week 4; plane-plane can never touch (two half-spaces can
+            // always be pushed apart trivially, so it is not a contact).
+            Manifold manifold;
+            if (shapeA.type == ShapeType::Circle && shapeB.type == ShapeType::Circle) {
+                manifold = CollideCircles(shapeA.circle, bodyA.xf, shapeB.circle, bodyB.xf);
+            } else if (shapeA.type == ShapeType::Circle && shapeB.type == ShapeType::Plane) {
+                manifold = CollideCircleAndPlane(shapeA.circle, bodyA.xf, shapeB.plane, bodyB.xf);
+            } else if (shapeA.type == ShapeType::Plane && shapeB.type == ShapeType::Circle) {
+                manifold = CollidePlaneAndCircle(shapeA.plane, bodyA.xf, shapeB.circle, bodyB.xf);
+            } else {
+                continue;
+            }
+            if (!manifold.IsTouching()) {
+                continue;
+            }
+
+            Contact contact;
+            contact.bodyA = bodyA.handle;
+            contact.bodyB = bodyB.handle;
+            contact.manifold = manifold;
+            // Material combination contract (Contact.h): geometric mean friction,
+            // larger restitution wins (the bouncier surface dominates).
+            contact.friction = std::sqrt(bodyA.friction * bodyB.friction);
+            contact.restitution =
+                (bodyA.restitution > bodyB.restitution) ? bodyA.restitution : bodyB.restitution;
+            contact.isPersistent = MatchAndInheritImpulses(contact, m_previousContacts);
+            m_contacts.push_back(contact);
+        }
+    }
 }
 
 void World::BuildIslands() {
@@ -411,7 +753,8 @@ void World::WarmStart() {
 
 void World::SolveVelocityConstraints() {
     // RESERVED (Weeks 3-5): velocityIterations passes of sequential impulses
-    // (normal, friction and restitution constraints).
+    // (normal, friction and restitution constraints). The Week 2 velocity hack
+    // lives in SolvePositionConstraints() and is replaced here in Week 3.
 }
 
 void World::IntegratePositions(float dt) {
@@ -455,14 +798,108 @@ void World::IntegratePositions(float dt) {
 }
 
 void World::SolvePositionConstraints() {
-    // RESERVED (Week 5): positionIterations passes of split-impulse position
-    // correction. Positions change, velocities do not.
+    // ========================================================================
+    // TEMPORARY Week 2 response - do not build features on this code.
+    //
+    // 1) Position level: push overlapping bodies apart along the contact normal
+    //    (mass-weighted, capped by kMaxLinearCorrection). Week 5 replaces this
+    //    with split-impulse position correction.
+    // 2) Velocity level: project the normal relative velocity to zero (or to
+    //    -e*vn above the restitution threshold). This is the "restitution as a
+    //    position correction" experiment of Week 2 D6; it has NO angular
+    //    response and does not conserve momentum/energy. Week 3 replaces it with
+    //    the Sequential Impulse solver.
+    // ========================================================================
+    const int32_t contactCount = static_cast<int32_t>(m_contacts.size());
+    for (int32_t contactIndex = 0; contactIndex < contactCount; ++contactIndex) {
+        Contact& contact = m_contacts[static_cast<std::size_t>(contactIndex)];
+        // Handles are rebuilt every step, but stay defensive: a destroyed body
+        // must never make the response phase index a dead slot.
+        if (!IsValid(contact.bodyA) || !IsValid(contact.bodyB)) {
+            continue;
+        }
+        Body& bodyA = *GetBodyMutable(contact.bodyA);
+        Body& bodyB = *GetBodyMutable(contact.bodyB);
+        const Manifold& manifold = contact.manifold;
+        const Vec2 normal = manifold.normal;
+        const float invMassSum = bodyA.invMass + bodyB.invMass;
+
+        // ---- 1) positional push-out --------------------------------------
+        // The slop band is deliberately ignored: penetrating less than that is
+        // not worth a correction step (it would only inject jitter).
+        const float correction = Clamp((manifold.penetration - kLinearSlop) * kPositionCorrectionFactor, 0.0f,
+                                       kMaxLinearCorrection);
+        if (correction > 0.0f && invMassSum > 0.0f) {
+            // Move A along -normal and B along +normal. Dividing the total by the
+            // inverse-mass sum and re-multiplying by each inverse mass means the
+            // heavier body moves less (a static body has invMass == 0 and never
+            // moves at all). Only dynamic bodies participate explicitly, so a
+            // kinematic body is never displaced by a contact.
+            const Vec2 unitPush = normal * (correction / invMassSum);
+            if (bodyA.IsDynamic()) {
+                bodyA.xf.p -= unitPush * bodyA.invMass;
+            }
+            if (bodyB.IsDynamic()) {
+                bodyB.xf.p += unitPush * bodyB.invMass;
+            }
+        }
+
+        // ---- 2) normal-velocity projection (TEMPORARY restitution) --------
+        for (int32_t pointIndex = 0; pointIndex < manifold.pointCount; ++pointIndex) {
+            const ContactPoint& point = manifold.points[pointIndex];
+            const Vec2 worldPointA = Mul(bodyA.xf, point.localPointA);
+            const Vec2 worldPointB = Mul(bodyB.xf, point.localPointB);
+            const Vec2 leverA = worldPointA - bodyA.xf.p;
+            const Vec2 leverB = worldPointB - bodyB.xf.p;
+            // Section 4.2: vRel = (vB + wB x rB) - (vA + wA x rA).
+            const Vec2 velocityA = bodyA.linearVelocity + Cross(bodyA.angularVelocity, leverA);
+            const Vec2 velocityB = bodyB.linearVelocity + Cross(bodyB.angularVelocity, leverB);
+            const float normalVelocity = Dot(velocityB - velocityA, normal);
+            if (normalVelocity >= 0.0f) {
+                // Separating (or already resting): nothing to project.
+                continue;
+            }
+            // Bounce only above the restitution threshold (Section 6.4), so a
+            // resting body does not buzz on sub-millimetre approaches.
+            const float approachSpeed = -normalVelocity;
+            const float targetNormalVelocity = (approachSpeed > kRestitutionVelocityThreshold)
+                                                   ? (-contact.restitution * normalVelocity)
+                                                   : 0.0f;
+            const float deltaVelocity = targetNormalVelocity - normalVelocity;
+            if (deltaVelocity <= 0.0f || invMassSum <= 0.0f) {
+                continue;
+            }
+            // Mass-weighted linear velocity change along the normal. Angular
+            // velocity is intentionally not touched (see the TEMPORARY note).
+            const Vec2 unitImpulse = normal * (deltaVelocity / invMassSum);
+            if (bodyA.IsDynamic()) {
+                bodyA.linearVelocity -= unitImpulse * bodyA.invMass;
+            }
+            if (bodyB.IsDynamic()) {
+                bodyB.linearVelocity += unitImpulse * bodyB.invMass;
+            }
+        }
+    }
 }
 
 void World::Synchronize() {
-    // RESERVED (Week 6): copy the final simulated state into the body transform
-    // and refresh the broad-phase AABBs (the Week 4 hot/cold split writes the
-    // state arrays back here as well).
+    // Refresh each body's cached AABB from its shape and current transform. This
+    // is what UpdateContacts filters on during the NEXT step (phase 3 runs before
+    // this phase, so the bounds are always from the end of the previous step).
+    const int32_t bodyCount = static_cast<int32_t>(m_bodies.size());
+    for (int32_t index = 0; index < bodyCount; ++index) {
+        if (!m_bodyIds.IsValid(index)) {
+            continue;
+        }
+        Body& body = m_bodies[static_cast<std::size_t>(index)];
+        if (IsValidShape(body.shape)) {
+            body.aabb = ComputeShapeAABB(*GetShapeMutable(body.shape), body.xf);
+        } else {
+            // A collider-less body is a point: the degenerate box keeps the
+            // candidate filter well-defined (no false positives).
+            body.aabb = AABB{body.xf.p, body.xf.p};
+        }
+    }
 }
 
 void World::UpdateSleep(float dt) {
@@ -495,6 +932,14 @@ const Body* World::GetBodyChecked(BodyHandle handle) const {
         return nullptr;
     }
     return &m_bodies[static_cast<std::size_t>(handle.index)];
+}
+
+Shape* World::GetShapeMutable(ShapeHandle shape) {
+    if (!IsValidShape(shape)) {
+        assert(false && "World::GetShapeMutable: stale or invalid shape handle");
+        return nullptr;
+    }
+    return &m_shapes[static_cast<std::size_t>(shape.index)];
 }
 
 } // namespace p2

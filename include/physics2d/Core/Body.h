@@ -9,8 +9,9 @@
 // `BodySim` / `BodyState` parallel arrays without changing the public API
 // (World's accessor functions are the stable boundary - see docs/dev-interfaces.md).
 //
-// The body owns no shape geometry in Week 1. `shape` is a reserved slot; shape
-// storage and mass derivation arrive with the collision work (Week 2+).
+// The body does not own geometry: it stores a ShapeHandle into World's shape
+// pool (Week 2). World::AttachShape derives mass/inertia from the shape and the
+// body's density; `fixedRotation` keeps the angular inverse mass at zero.
 
 #include "physics2d/Core/BodyDef.h"
 #include "physics2d/Core/Handle.h"
@@ -28,7 +29,7 @@ struct Body {
     // ---------------------------------------------------------------------
     BodyHandle handle;
     BodyType type = BodyType::Static;
-    ShapeHandle shape; // reserved (Week 2+): handle into World's shape storage
+    ShapeHandle shape; // Week 2: handle into World's shape storage
 
     float density = 1.0f;
     float friction = 0.3f;
@@ -37,6 +38,7 @@ struct Body {
     bool allowSleep = true;
     bool isAwake = true; // static bodies are created asleep, kinematic/dynamic awake
     bool isSensor = false;
+    bool fixedRotation = false; // forces invInertia = 0 (pinned rotation)
 
     void* userData = nullptr; // opaque to the engine
     std::string debugName;    // testbed / regression output only

@@ -3,27 +3,41 @@
 // p2::World — owns bodies and runs the simulation pipeline (Section 4.6).
 //
 // ============================================================================
-// RESERVED WORK INTERFACE (this is the contract Weeks 2-8 build on)
+// WORK INTERFACE MAP (contract Weeks 2-8 build on)
 // ============================================================================
 // The Step() sequence below is fixed by Section 4.6 of the design document and
-// is implemented NOW in its final shape, with the not-yet-landed phases present
-// as empty private methods. Later weeks only fill in bodies of those methods:
+// is implemented in its final shape, with the not-yet-landed phases present as
+// empty private methods. Later weeks only fill in bodies of those methods:
 //
 //   Phase                            Week   Method
 //   ------------------------------   ----   -------------------------------
 //   1. integrate forces -> velocity    1    IntegrateForces()      [done]
 //   2. broad phase update              6    UpdateBroadPhase()     [reserved]
-//   3. narrow phase / contacts         2-5  UpdateContacts()       [reserved]
+//   3. narrow phase / contacts         2    UpdateContacts()       [done W2]
 //   4. island construction             7    BuildIslands()         [reserved]
 //   5. warm start                      5    WarmStart()            [reserved]
 //   6. velocity iterations             3-5  SolveVelocityConstraints() [reserved]
 //   7. integrate velocity -> position   1   IntegratePositions()   [done]
-//   8. position iterations (split imp) 5    SolvePositionConstraints() [reserved]
-//   9. synchronise AABB/transform      6    Synchronize()          [reserved]
+//   8. position iterations (split imp) 2/5  SolvePositionConstraints() [temporary W2]
+//   9. synchronise AABB/transform      2    Synchronize()          [done W2]
 //   10. sleep evaluation               7    UpdateSleep()          [reserved]
 //   11. debug validation               1    Validate()             [done]
 //
-// Why define the empty phases now: inserting a phase in the middle of Step()
+// Stable from Week 2 on:
+// - Shape pool: one shape per body (Body::shape), created via Create*Shape and
+//   attached with AttachShape (which derives mass/inertia from the density).
+// - Contact list: World owns it (narrow-phase output), rebuilt every frame by
+//   UpdateContacts() with O(N^2) pair enumeration + AABB filter. Week 6 replaces
+//   only the enumeration with IBroadPhase; the Contact data contract stays.
+// - Persistence: per-point accumulated impulses are inherited across frames by
+//   ContactID::Key() in MatchAndInheritImpulses (Week 5 completes the solver
+//   side; the matching logic already exists so warm starting can rely on it).
+// - Temporary response: Week 2's SolvePositionConstraints() is a position-level
+//   hack (push out + direct normal-velocity projection). Week 3 replaces the
+//   velocity part with Sequential Impulse, Week 5 the position part with split
+//   impulse. The two temporary pieces are marked in the .cpp file.
+//
+// Why define the empty phases early: inserting a phase in the middle of Step()
 // later means re-auditing every ordering assumption. With the skeleton in
 // place, a week's work is "fill one method + one test", and the ordering can
 // never regress.
@@ -35,11 +49,13 @@
 // Week 4 hot/cold split keeps the same index space).
 // ============================================================================
 
+#include "physics2d/Collision/Contact.h"
 #include "physics2d/Core/Body.h"
 #include "physics2d/Core/BodyDef.h"
 #include "physics2d/Core/BroadPhaseInterface.h"
 #include "physics2d/Core/IDPool.h"
 #include "physics2d/Core/Settings.h"
+#include "physics2d/Core/Shape.h"
 
 #include <cstdint>
 #include <memory>
@@ -75,6 +91,28 @@ class World {
     [[nodiscard]] const Body* GetBody(BodyHandle handle) const;
 
     // ------------------------------------------------------------------
+    // Shapes (Week 2). World owns a shape pool; a body references one shape.
+    // ------------------------------------------------------------------
+
+    // Invalid input (non-positive radius, non-finite values) is rejected with an
+    // invalid handle plus a debug assert - never silently repaired.
+    [[nodiscard]] ShapeHandle CreateCircleShape(float radius, Vec2 localCenter = Vec2(0.0f, 0.0f));
+    [[nodiscard]] ShapeHandle CreatePlaneShape(Vec2 normal, float offset = 0.0f);
+
+    // Attaches (or replaces) the body's shape and recomputes mass/inertia from
+    // density * shape mass properties (parallel-axis transfer to the body
+    // origin). A PlaneShape is only valid on a Static body (infinite mass);
+    // attaching it to a kinematic/dynamic body fails.
+    [[nodiscard]] bool AttachShape(BodyHandle body, ShapeHandle shape);
+
+    // Releases an unattached shape slot. A shape attached to a body must be
+    // detached first (destroy the body instead); misuse trips a debug assert.
+    void DestroyShape(ShapeHandle shape);
+
+    [[nodiscard]] bool IsValidShape(ShapeHandle shape) const;
+    [[nodiscard]] const Shape* GetShape(ShapeHandle shape) const;
+
+    // ------------------------------------------------------------------
     // Stable state accessors (layout-independent public API)
     // ------------------------------------------------------------------
     [[nodiscard]] Vec2 GetPosition(BodyHandle handle) const;
@@ -91,6 +129,13 @@ class World {
     [[nodiscard]] bool IsAwake(BodyHandle handle) const;
     [[nodiscard]] void* GetUserData(BodyHandle handle) const;
     void SetUserData(BodyHandle handle, void* userData);
+
+    // Material properties (Week 2: consumed by the temporary response; Week 5:
+    // combined per contact by friction = sqrt(fA*fB), restitution = max(eA,eB)).
+    [[nodiscard]] float GetFriction(BodyHandle handle) const;
+    void SetFriction(BodyHandle handle, float friction);
+    [[nodiscard]] float GetRestitution(BodyHandle handle) const;
+    void SetRestitution(BodyHandle handle, float restitution);
 
     // ------------------------------------------------------------------
     // External forces / impulses (applied before the next Step)
@@ -123,18 +168,26 @@ class World {
     [[nodiscard]] IBroadPhase* GetBroadPhase() const noexcept { return m_broadPhase.get(); }
 
     // ------------------------------------------------------------------
-    // Statistics panels / regression output (reserved values return 0 in Week 1)
+    // Contacts (Week 2): read-only view for tests, testbed panels and the
+    // future solver. Rebuilt every Step(); do not hold references across steps.
+    // ------------------------------------------------------------------
+    [[nodiscard]] const std::vector<Contact>& GetContacts() const noexcept { return m_contacts; }
+
+    // ------------------------------------------------------------------
+    // Statistics panels / regression output (reserved values return 0 until the
+    // owning week lands)
     // ------------------------------------------------------------------
     [[nodiscard]] int32_t GetBodyCount() const noexcept { return m_bodyIds.GetAliveCount(); }
+    [[nodiscard]] int32_t GetShapeCount() const noexcept { return m_shapeIds.GetAliveCount(); }
     [[nodiscard]] int32_t GetAwakeBodyCount() const;
     [[nodiscard]] int32_t GetIslandCount() const noexcept;  // reserved (Week 7)
-    [[nodiscard]] int32_t GetContactCount() const noexcept; // reserved (Week 2+)
+    [[nodiscard]] int32_t GetContactCount() const noexcept; // Week 2: m_contacts.size()
 
     // ------------------------------------------------------------------
     // Debug
     // ------------------------------------------------------------------
 
-    // Destroys all bodies and resets counters (used by demo Reset()).
+    // Destroys all bodies/shapes and resets counters (used by demo Reset()).
     void Clear();
 
     // Scans every live body for NaN/Inf and asserts with the offending body
@@ -150,19 +203,20 @@ class World {
     // ---- Step phases (Section 4.6 order is normative) -------------------
     void IntegrateForces(float dt);
     void UpdateBroadPhase(float dt); // reserved Week 6
-    void UpdateContacts();           // reserved Weeks 2-5
+    void UpdateContacts();           // Week 2: O(N^2) + AABB filter + analytic narrow phase
     void BuildIslands();             // reserved Week 7
     void WarmStart();                // reserved Week 5
     void SolveVelocityConstraints(); // reserved Weeks 3-5
     void IntegratePositions(float dt);
-    void SolvePositionConstraints(); // reserved Week 5
-    void Synchronize();              // reserved Week 6
+    void SolvePositionConstraints(); // Week 2 temporary position-level response
+    void Synchronize();              // Week 2: body AABBs from shapes
     void UpdateSleep(float dt);      // reserved Week 7
     void Validate() const;           // debug-only NaN scan
 
     // Returns the body for a valid handle, asserting on misuse (debug).
     [[nodiscard]] Body* GetBodyMutable(BodyHandle handle);
     [[nodiscard]] const Body* GetBodyChecked(BodyHandle handle) const;
+    [[nodiscard]] Shape* GetShapeMutable(ShapeHandle shape);
 
     Vec2 m_gravity;
     SolverSettings m_solverSettings;
@@ -173,7 +227,17 @@ class World {
     std::vector<Body> m_bodies;
     IDPool m_bodyIds;
 
-    // RESERVED (Week 6): broad phase implementation, may be null in Week 1.
+    // Shape pool (Week 2). One shape per body; geometry is owned here, the body
+    // only stores the handle. Same slot/generation discipline as bodies.
+    std::vector<Shape> m_shapes;
+    IDPool m_shapeIds;
+
+    // Contact list (Week 2). Rebuilt each frame; m_previousContacts keeps the
+    // last frame for persistence matching (warm starting prep, Week 5).
+    std::vector<Contact> m_contacts;
+    std::vector<Contact> m_previousContacts;
+
+    // RESERVED (Week 6): broad phase implementation, may be null until then.
     std::unique_ptr<IBroadPhase> m_broadPhase;
 };
 

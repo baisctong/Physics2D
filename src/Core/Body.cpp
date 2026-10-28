@@ -23,12 +23,13 @@ void Body::Initialize(const BodyDef& def) {
 
     // ---- cold, user-facing parameters -----------------------------------
     type = def.type;
-    shape = ShapeHandle{}; // reserved: no shape storage before Week 2
+    shape = ShapeHandle{}; // attached later by World::AttachShape (Week 2)
     density = def.density;
     friction = def.friction;
     restitution = def.restitution;
     allowSleep = def.allowSleep;
     isSensor = def.isSensor;
+    fixedRotation = def.fixedRotation;
     userData = def.userData;
     debugName = def.debugName;
 
@@ -70,9 +71,10 @@ void Body::Initialize(const BodyDef& def) {
         mass = def.mass;
         inertia = def.inertia;
         invMass = 1.0f / mass;
-        // fixedRotation is a dynamic-body option: it freezes the angular
-        // degree of freedom without turning the body into a kinematic one.
-        invInertia = def.fixedRotation ? 0.0f : (1.0f / inertia);
+        // fixedRotation is a dynamic-body option: it freezes the angular degree
+        // of freedom without turning the body into a kinematic one. The flag is
+        // stored so World::AttachShape can re-derive mass and honour it again.
+        invInertia = fixedRotation ? 0.0f : (1.0f / inertia);
         isAwake = true;
         break;
     }

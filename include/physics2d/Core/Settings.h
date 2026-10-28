@@ -79,6 +79,19 @@ inline constexpr int32_t kMaxStepsPerFrame = 5;
 // Integer gravity for easy mental arithmetic in demos (Section 4.1).
 inline constexpr float kDefaultGravityY = -10.0f;
 
+// ---- Week 2: temporary position-level response ------------------------------
+// SolvePositionConstraints() in Week 2 is a placeholder response: push overlapping
+// bodies apart along the contact normal and project the normal velocity. Both are
+// physically wrong (no momentum conservation, no angular response, energy is
+// injected/removed at will) - exactly why Week 3 introduces Sequential Impulse
+// and Week 5 replaces the position part with split impulse.
+inline constexpr float kPositionCorrectionFactor = 1.0f;
+
+// Infinite-plane AABB half extent. Planes are handled analytically by the narrow
+// phase; until the broad phase special-cases them (Week 6) their bounds are a
+// deliberately huge box so the AABB candidate filter never drops the ground.
+inline constexpr float kPlaneAabbExtent = 1.0e6f;
+
 // ---- runtime-editable solver parameters -------------------------------------
 
 // The subset of the constants above that the testbed exposes as sliders
