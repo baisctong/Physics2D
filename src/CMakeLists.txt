@@ -18,6 +18,7 @@ add_library(physics2d_core STATIC
     Collision/CircleShape.cpp
     Collision/PlaneShape.cpp
     Collision/Analytic.cpp
+    Solver/ContactSolver.cpp
 )
 
 add_library(p2::core ALIAS physics2d_core)
