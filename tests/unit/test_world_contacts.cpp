@@ -175,17 +175,20 @@ TEST(WorldContactTest, ContactPersistsWithStableKeyAcrossFrames) {
     EXPECT_FALSE(world.GetContacts()[0].isPersistent); // first frame of the pair
     const uint16_t firstKey = world.GetContacts()[0].manifold.points[0].id.Key();
 
-    // The temporary response pushes the ball out to roughly the slop band, so the
-    // pair still touches on the second step (penetration ~ 0.0078 m) and the same
-    // physical contact point must produce the same ContactID::Key().
+    // The contact persists from frame to frame: the solver removes the approach
+    // velocity and the position push-out settles the ball in the slop band
+    // (penetration ~ kLinearSlop = 0.005 m), so the same physical contact point
+    // must produce the same ContactID::Key() on the second step.
     world.Step(kDt);
     ASSERT_EQ(world.GetContactCount(), 1);
     const Contact& second = world.GetContacts()[0];
     EXPECT_TRUE(second.isPersistent);
     EXPECT_EQ(second.manifold.points[0].id.Key(), firstKey);
-    // The inherited impulses are still zero in Week 2 (solver arrives in Week 3),
-    // but the matching logic has run and found the predecessor.
-    EXPECT_FLOAT_EQ(second.manifold.points[0].normalImpulse, 0.0f);
+    // Persistence matching has found the predecessor's point. Since Week 3 the
+    // solver writes the accumulated normal impulse back into the contact point
+    // every step (the accumulated clamp keeps it non-negative); only Week 5 warm
+    // starting actually APPLIES that inherited value again.
+    EXPECT_GE(second.manifold.points[0].normalImpulse, 0.0f);
 }
 
 TEST(WorldContactTest, AabbFilterRejectsDistantBodies) {

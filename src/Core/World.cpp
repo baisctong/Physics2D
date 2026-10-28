@@ -1,17 +1,22 @@
 // p2::World — body/shape ownership and the fixed simulation pipeline
-// (Section 4.6; Week 2 adds shapes, contacts and a temporary response layer).
+// (Section 4.6). Week 3 wires the Sequential Impulse solver in: UpdateContacts
+// (phase 3) produces the manifolds, PrepareConstraints precomputes the per-point
+// effective masses and restitution bias, and SolveVelocityConstraints (phase 6)
+// runs the iterations. The Week 2 temporary normal-velocity projection is gone;
+// only the position-level push-out in phase 8 remains as a Week 5 placeholder
+// (split impulse replaces it).
 // See World.h for the frozen pipeline and API contracts.
-//
-// Week 2 really runs phases 1 (IntegrateForces), 3 (UpdateContacts), 7
-// (IntegratePositions), 8 (SolvePositionConstraints, TEMPORARY), 9
-// (Synchronize) and 11 (Validate). Phases 2/4/5/6/10 stay empty hooks so the
-// documented ordering can never regress while the solver/island work lands.
 //
 // Scale note: pair enumeration is O(N^2) with an AABB pre-filter on purpose.
 // Week 6 replaces only the enumeration with IBroadPhase; the contact data
 // contract and the narrow-phase dispatch below stay exactly the same.
 
 #include "physics2d/Core/World.h"
+
+// World.h only forward-declares ContactSolver (Core must not include Solver
+// headers in its public surface); the .cpp includes it because the unique_ptr
+// destructor needs the complete type.
+#include "physics2d/Solver/ContactSolver.h"
 
 #include "physics2d/Collision/Analytic.h"
 #include "physics2d/Collision/CircleShape.h"
@@ -103,7 +108,7 @@ namespace {
 
 } // namespace
 
-World::World(Vec2 gravity) : m_gravity(gravity) {
+World::World(Vec2 gravity) : m_gravity(gravity), m_contactSolver(std::make_unique<ContactSolver>()) {
     assert(p2::IsValid(gravity) && "World: non-finite gravity");
 }
 
@@ -500,12 +505,14 @@ void World::Step(float dt, int32_t velocityIterations, int32_t positionIteration
         return;
     }
 
-    // The iteration counts only reach the solver phases that land in Week 3+.
-    // They are already part of the frozen public API (testbed sliders and the
-    // reserved pipeline documentation), so accept and discard them explicitly
-    // rather than leave an unused-parameter warning in the build.
-    (void)velocityIterations;
-    (void)positionIterations;
+    // Store the per-call iteration override. The velocity count is consumed by
+    // the Sequential Impulse iterations (phase 6) and the position count will be
+    // consumed by split-impulse position iterations in Week 5. Step(dt) passes
+    // the stored SolverSettings defaults through this same path.
+    assert(velocityIterations >= 0 && positionIterations >= 0 &&
+           "World::Step: iteration counts must be non-negative");
+    m_activeVelocityIterations = velocityIterations;
+    m_activePositionIterations = positionIterations;
 
     // Section 4.6 pipeline: the ORDER is normative. When filling the reserved
     // phases in later weeks, do not move a call - only replace its body.
@@ -513,11 +520,12 @@ void World::Step(float dt, int32_t velocityIterations, int32_t positionIteration
     UpdateBroadPhase(dt);       //  2. broad phase update                   [reserved Week 6]
     UpdateContacts();           //  3. narrow phase / contact generation     [done W2, O(N^2)]
     BuildIslands();             //  4. island construction                  [reserved Week 7]
-    WarmStart();                //  5. warm start                           [reserved Week 5]
-    SolveVelocityConstraints(); //  6. velocity iterations                  [reserved Weeks 3-5]
+    PrepareConstraints();       //     solver cache (pure precompute; not a state phase)
+    WarmStart();                //  5. warm start                           [reserved W5, no-op]
+    SolveVelocityConstraints(); //  6. sequential impulses (normal only)     [done W3]
     IntegratePositions(dt);     //  7. velocity -> position (semi-implicit) [done]
-    SolvePositionConstraints(); //  8. position iterations (split impulse)  [TEMPORARY W2]
-    Synchronize();              //  9. transform/AABB synchronisation       [done W2]
+    SolvePositionConstraints(); //  8. residual penetration push-out         [W2 placeholder, W5]
+    Synchronize();              //  9. transform/AABB synchronisation        [done W2]
     UpdateSleep(dt);            // 10. sleep evaluation                     [reserved Week 7]
     Validate();                 // 11. debug validation (NaN/Inf scan)      [done]
 }
@@ -561,6 +569,11 @@ int32_t World::GetContactCount() const noexcept {
 void World::Clear() {
     // Contacts reference bodies by handle, so they must go before the bodies
     // (and shapes before the shape pool) to leave no stale references behind.
+    // The solver's cached constraints point into the contact list, so they go
+    // first of all.
+    if (m_contactSolver != nullptr) {
+        m_contactSolver->Clear();
+    }
     m_contacts.clear();
     m_previousContacts.clear();
     m_shapes.clear();
@@ -746,15 +759,28 @@ void World::BuildIslands() {
     // bodies act as island boundaries and are never island members.
 }
 
+void World::PrepareConstraints() {
+    // Solver precompute step (no body state changes, so it is not one of the
+    // Section 4.6 phases): lever arms rA/rB, effective normal mass 1/K_n and the
+    // restitution bias, cached once and reused by every velocity iteration.
+    // Positions are frozen between this call and SolveVelocityConstraints, so the
+    // cached levers stay valid for the whole frame.
+    m_contactSolver->Prepare(m_bodies, m_contacts, m_solverSettings);
+}
+
 void World::WarmStart() {
     // RESERVED (Week 5): apply accumulatedImpulse * warmStartFactor to every
     // persistent contact exactly once, before the velocity iterations begin.
+    // ContactSolver::WarmStart is a no-op in Week 3 (P08 deliberately starts
+    // without warm starting), but the call site and its ordering are final.
+    m_contactSolver->WarmStart(m_bodies, m_contacts, m_solverSettings);
 }
 
 void World::SolveVelocityConstraints() {
-    // RESERVED (Weeks 3-5): velocityIterations passes of sequential impulses
-    // (normal, friction and restitution constraints). The Week 2 velocity hack
-    // lives in SolvePositionConstraints() and is replaced here in Week 3.
+    // Phase 6 (done W3): Sequential Impulse over the normal constraints. The
+    // solver writes the accumulated normal impulse back into each ContactPoint,
+    // which is the persistent storage Week 5 inherits for warm starting.
+    m_contactSolver->SolveVelocity(m_bodies, m_contacts, m_activeVelocityIterations, m_solverSettings);
 }
 
 void World::IntegratePositions(float dt) {
@@ -799,20 +825,18 @@ void World::IntegratePositions(float dt) {
 
 void World::SolvePositionConstraints() {
     // ========================================================================
-    // TEMPORARY Week 2 response - do not build features on this code.
+    // Week 2 position push-out: the last remaining TEMPORARY response.
     //
-    // 1) Position level: push overlapping bodies apart along the contact normal
-    //    (mass-weighted, capped by kMaxLinearCorrection). Week 5 replaces this
-    //    with split-impulse position correction.
-    // 2) Velocity level: project the normal relative velocity to zero (or to
-    //    -e*vn above the restitution threshold). This is the "restitution as a
-    //    position correction" experiment of Week 2 D6; it has NO angular
-    //    response and does not conserve momentum/energy. Week 3 replaces it with
-    //    the Sequential Impulse solver.
+    // The velocity layer is now owned by ContactSolver (phase 6), so the Week 2
+    // normal-velocity projection / restitution hack is GONE. What remains is a
+    // pure position-level correction that removes residual penetration so deep
+    // overlaps do not visibly sink. It is not physically derived and has no
+    // pseudo-velocity: Week 5 replaces this whole function with split-impulse
+    // position correction (Section 6.4).
     // ========================================================================
     const int32_t contactCount = static_cast<int32_t>(m_contacts.size());
     for (int32_t contactIndex = 0; contactIndex < contactCount; ++contactIndex) {
-        Contact& contact = m_contacts[static_cast<std::size_t>(contactIndex)];
+        const Contact& contact = m_contacts[static_cast<std::size_t>(contactIndex)];
         // Handles are rebuilt every step, but stay defensive: a destroyed body
         // must never make the response phase index a dead slot.
         if (!IsValid(contact.bodyA) || !IsValid(contact.bodyB)) {
@@ -820,64 +844,28 @@ void World::SolvePositionConstraints() {
         }
         Body& bodyA = *GetBodyMutable(contact.bodyA);
         Body& bodyB = *GetBodyMutable(contact.bodyB);
-        const Manifold& manifold = contact.manifold;
-        const Vec2 normal = manifold.normal;
+        const Vec2 normal = contact.manifold.normal;
         const float invMassSum = bodyA.invMass + bodyB.invMass;
 
-        // ---- 1) positional push-out --------------------------------------
         // The slop band is deliberately ignored: penetrating less than that is
         // not worth a correction step (it would only inject jitter).
-        const float correction = Clamp((manifold.penetration - kLinearSlop) * kPositionCorrectionFactor, 0.0f,
-                                       kMaxLinearCorrection);
-        if (correction > 0.0f && invMassSum > 0.0f) {
-            // Move A along -normal and B along +normal. Dividing the total by the
-            // inverse-mass sum and re-multiplying by each inverse mass means the
-            // heavier body moves less (a static body has invMass == 0 and never
-            // moves at all). Only dynamic bodies participate explicitly, so a
-            // kinematic body is never displaced by a contact.
-            const Vec2 unitPush = normal * (correction / invMassSum);
-            if (bodyA.IsDynamic()) {
-                bodyA.xf.p -= unitPush * bodyA.invMass;
-            }
-            if (bodyB.IsDynamic()) {
-                bodyB.xf.p += unitPush * bodyB.invMass;
-            }
+        const float correction =
+            Clamp((contact.manifold.penetration - kLinearSlop) * kPositionCorrectionFactor, 0.0f,
+                  kMaxLinearCorrection);
+        if (correction <= 0.0f || invMassSum <= 0.0f) {
+            continue;
         }
-
-        // ---- 2) normal-velocity projection (TEMPORARY restitution) --------
-        for (int32_t pointIndex = 0; pointIndex < manifold.pointCount; ++pointIndex) {
-            const ContactPoint& point = manifold.points[pointIndex];
-            const Vec2 worldPointA = Mul(bodyA.xf, point.localPointA);
-            const Vec2 worldPointB = Mul(bodyB.xf, point.localPointB);
-            const Vec2 leverA = worldPointA - bodyA.xf.p;
-            const Vec2 leverB = worldPointB - bodyB.xf.p;
-            // Section 4.2: vRel = (vB + wB x rB) - (vA + wA x rA).
-            const Vec2 velocityA = bodyA.linearVelocity + Cross(bodyA.angularVelocity, leverA);
-            const Vec2 velocityB = bodyB.linearVelocity + Cross(bodyB.angularVelocity, leverB);
-            const float normalVelocity = Dot(velocityB - velocityA, normal);
-            if (normalVelocity >= 0.0f) {
-                // Separating (or already resting): nothing to project.
-                continue;
-            }
-            // Bounce only above the restitution threshold (Section 6.4), so a
-            // resting body does not buzz on sub-millimetre approaches.
-            const float approachSpeed = -normalVelocity;
-            const float targetNormalVelocity = (approachSpeed > kRestitutionVelocityThreshold)
-                                                   ? (-contact.restitution * normalVelocity)
-                                                   : 0.0f;
-            const float deltaVelocity = targetNormalVelocity - normalVelocity;
-            if (deltaVelocity <= 0.0f || invMassSum <= 0.0f) {
-                continue;
-            }
-            // Mass-weighted linear velocity change along the normal. Angular
-            // velocity is intentionally not touched (see the TEMPORARY note).
-            const Vec2 unitImpulse = normal * (deltaVelocity / invMassSum);
-            if (bodyA.IsDynamic()) {
-                bodyA.linearVelocity -= unitImpulse * bodyA.invMass;
-            }
-            if (bodyB.IsDynamic()) {
-                bodyB.linearVelocity += unitImpulse * bodyB.invMass;
-            }
+        // Move A along -normal and B along +normal. Dividing the total by the
+        // inverse-mass sum and re-multiplying by each inverse mass means the
+        // heavier body moves less (a static body has invMass == 0 and never moves
+        // at all). Only dynamic bodies participate explicitly, so a kinematic
+        // body is never displaced by a contact.
+        const Vec2 unitPush = normal * (correction / invMassSum);
+        if (bodyA.IsDynamic()) {
+            bodyA.xf.p -= unitPush * bodyA.invMass;
+        }
+        if (bodyB.IsDynamic()) {
+            bodyB.xf.p += unitPush * bodyB.invMass;
         }
     }
 }

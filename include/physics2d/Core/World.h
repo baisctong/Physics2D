@@ -15,10 +15,11 @@
 //   2. broad phase update              6    UpdateBroadPhase()     [reserved]
 //   3. narrow phase / contacts         2    UpdateContacts()       [done W2]
 //   4. island construction             7    BuildIslands()         [reserved]
-//   5. warm start                      5    WarmStart()            [reserved]
-//   6. velocity iterations             3-5  SolveVelocityConstraints() [reserved]
+//      solver preparation             3    PrepareConstraints()   [done W3]
+//   5. warm start                      5    WarmStart()            [W3 no-op]
+//   6. velocity iterations             3    SolveVelocityConstraints() [done W3 normal-only]
 //   7. integrate velocity -> position   1   IntegratePositions()   [done]
-//   8. position iterations (split imp) 2/5  SolvePositionConstraints() [temporary W2]
+//   8. position iterations (split imp) 2/5  SolvePositionConstraints() [W3 push-out only]
 //   9. synchronise AABB/transform      2    Synchronize()          [done W2]
 //   10. sleep evaluation               7    UpdateSleep()          [reserved]
 //   11. debug validation               1    Validate()             [done]
@@ -32,10 +33,13 @@
 // - Persistence: per-point accumulated impulses are inherited across frames by
 //   ContactID::Key() in MatchAndInheritImpulses (Week 5 completes the solver
 //   side; the matching logic already exists so warm starting can rely on it).
-// - Temporary response: Week 2's SolvePositionConstraints() is a position-level
-//   hack (push out + direct normal-velocity projection). Week 3 replaces the
-//   velocity part with Sequential Impulse, Week 5 the position part with split
-//   impulse. The two temporary pieces are marked in the .cpp file.
+// - Week 3 solver: ContactSolver (Solver/ContactSolver.h) is owned via
+//   unique_ptr and only forward-declared here, so Core does not include Solver
+//   headers. The World prepares constraints once per step, then runs
+//   velocityIterations sequential normal impulses before integrating positions.
+// - Remaining temporary response: SolvePositionConstraints keeps the Week 2
+//   position push-out (Baumgarte-free) until Week 5 replaces it with split
+//   impulse; the Week 2 velocity projection has been removed in Week 3.
 //
 // Why define the empty phases early: inserting a phase in the middle of Step()
 // later means re-auditing every ordering assumption. With the skeleton in
@@ -62,6 +66,10 @@
 #include <vector>
 
 namespace p2 {
+
+// Forward-declared: World owns the solver but Core headers must not pull in the
+// Solver module's implementation headers (see the work interface map above).
+class ContactSolver;
 
 class World {
   public:
@@ -205,10 +213,11 @@ class World {
     void UpdateBroadPhase(float dt); // reserved Week 6
     void UpdateContacts();           // Week 2: O(N^2) + AABB filter + analytic narrow phase
     void BuildIslands();             // reserved Week 7
-    void WarmStart();                // reserved Week 5
-    void SolveVelocityConstraints(); // reserved Weeks 3-5
+    void PrepareConstraints();       // Week 3: precompute rA/rB, K_n, restitution bias
+    void WarmStart();                // Week 5 (no-op until then)
+    void SolveVelocityConstraints(); // Week 3: sequential normal impulses
     void IntegratePositions(float dt);
-    void SolvePositionConstraints(); // Week 2 temporary position-level response
+    void SolvePositionConstraints(); // Week 2 position push-out (Week 5: split impulse)
     void Synchronize();              // Week 2: body AABBs from shapes
     void UpdateSleep(float dt);      // reserved Week 7
     void Validate() const;           // debug-only NaN scan
@@ -236,6 +245,14 @@ class World {
     // last frame for persistence matching (warm starting prep, Week 5).
     std::vector<Contact> m_contacts;
     std::vector<Contact> m_previousContacts;
+
+    // Week 3 solver (forward-declared type; complete in Solver/ContactSolver.h).
+    std::unique_ptr<ContactSolver> m_contactSolver;
+
+    // Per-step iteration counts from Step(dt, velIters, posIters). The velocities
+    // and positions phases read these so the public override stays meaningful.
+    int32_t m_activeVelocityIterations = kVelocityIterations;
+    int32_t m_activePositionIterations = kPositionIterations;
 
     // RESERVED (Week 6): broad phase implementation, may be null until then.
     std::unique_ptr<IBroadPhase> m_broadPhase;
