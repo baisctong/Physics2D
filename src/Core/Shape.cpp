@@ -1,13 +1,14 @@
-// p2::Shape — tagged-union dispatch for the shape family (Week 2, P05/P06).
+// p2::Shape — tagged-union dispatch for the shape family (Week 2/Week 4).
 //
 // The individual shape math lives in the Collision module (ComputeCircleMass,
-// ComputeCircleAABB, ...); this translation unit only dispatches over the tag.
-// Keeping the dispatch in Core is what lets World's shape pool stay a plain
-// std::vector<Shape> while the Collision module stays Core-agnostic.
+// ComputeCircleAABB, ComputePolygonMass, ...); this translation unit only
+// dispatches over the tag. Keeping the dispatch in Core is what lets World's
+// shape pool stay a plain std::vector<Shape> while the Collision module stays
+// Core-agnostic.
 //
-// Week 2 implements Circle and Plane. The Polygon tag is reserved for Week 4
-// (P04/P07): until Shape gains polygon storage every polygon-tagged value is
-// invalid, so the dispatch below asserts instead of silently returning zeros.
+// Week 4 fills in the Polygon tag: geometry is validated by SetPolygon /
+// SetPolygonAsBox when the shape is created, so the dispatch below can trust the
+// stored vertices and simply forward to the Collision helpers.
 
 #include "physics2d/Core/Shape.h"
 
@@ -22,9 +23,7 @@ bool Shape::IsValid() const noexcept {
     case ShapeType::Plane:
         return plane.IsValid();
     case ShapeType::Polygon:
-        // Reserved: no polygon storage exists yet, so there is nothing that
-        // could make a polygon-tagged shape valid in Week 2.
-        return false;
+        return polygon.IsValid();
     }
     return false;
 }
@@ -37,9 +36,9 @@ MassData ComputeShapeMass(const Shape& shape, float density) noexcept {
     case ShapeType::Plane:
         return ComputePlaneMass(shape.plane, density);
     case ShapeType::Polygon:
-        break;
+        return ComputePolygonMass(shape.polygon, density);
     }
-    assert(false && "ComputeShapeMass: PolygonShape mass properties arrive in Week 4 (P04)");
+    assert(false && "ComputeShapeMass: unknown ShapeType");
     return MassData{};
 }
 
@@ -51,9 +50,9 @@ AABB ComputeShapeAABB(const Shape& shape, const Transform& xf) noexcept {
     case ShapeType::Plane:
         return ComputePlaneAABB(shape.plane, xf);
     case ShapeType::Polygon:
-        break;
+        return ComputePolygonAABB(shape.polygon, xf);
     }
-    assert(false && "ComputeShapeAABB: PolygonShape collision arrives in Week 4 (P07)");
+    assert(false && "ComputeShapeAABB: unknown ShapeType");
     return AABB{};
 }
 

@@ -22,6 +22,7 @@
 #include "physics2d/Collision/CircleShape.h"
 #include "physics2d/Collision/ContactID.h"
 #include "physics2d/Collision/PlaneShape.h"
+#include "physics2d/Collision/SAT.h"
 #include "physics2d/Collision/ShapeTypes.h"
 #include "physics2d/Math/MathUtils.h"
 #include "physics2d/Math/Vec2.h"
@@ -72,6 +73,18 @@ namespace {
     Shape& slot = shapes[static_cast<std::size_t>(index)];
     slot = shape;
     return ShapeHandle{index, shapeIds.GetGeneration(index)};
+}
+
+// Returns the previous frame's contact for the same body pair, or nullptr. Used
+// both for SAT hysteresis (the cache hint) and as the persistence source.
+[[nodiscard]] const Contact* FindPreviousContact(const std::vector<Contact>& previousContacts,
+                                                 BodyHandle bodyA, BodyHandle bodyB) {
+    for (const Contact& previous : previousContacts) {
+        if (previous.bodyA == bodyA && previous.bodyB == bodyB) {
+            return &previous;
+        }
+    }
+    return nullptr;
 }
 
 // Inherits per-point accumulated impulses from the previous frame's contact for
@@ -220,6 +233,39 @@ ShapeHandle World::CreatePlaneShape(Vec2 normal, float offset) {
     shape.plane.offset = offset;
     if (!shape.IsValid()) {
         assert(false && "World::CreatePlaneShape: normal must be unit length and finite, offset finite");
+        return ShapeHandle{};
+    }
+    return AllocateShapeSlot(m_shapes, m_shapeIds, shape);
+}
+
+ShapeHandle World::CreatePolygonShape(const Vec2* vertices, int32_t count) {
+    // The caller owns the vertex array; a null pointer is a programmer error and
+    // must be rejected before SetPolygon reads it (core has no exception path).
+    if (vertices == nullptr) {
+        assert(false && "World::CreatePolygonShape: vertices must not be null");
+        return ShapeHandle{};
+    }
+    Shape shape;
+    shape.type = ShapeType::Polygon;
+    // SetPolygon validates winding, convexity, duplicates/collinear vertices and
+    // finite coordinates (see PolygonShape.h); the shape is left invalid on
+    // rejection, so a rejected call never consumes a pool slot.
+    if (!SetPolygon(shape.polygon, vertices, count)) {
+        assert(false &&
+               "World::CreatePolygonShape: rejected polygon (see PolygonShape.h validation contract)");
+        return ShapeHandle{};
+    }
+    return AllocateShapeSlot(m_shapes, m_shapeIds, shape);
+}
+
+ShapeHandle World::CreateBoxShape(float halfWidth, float halfHeight) {
+    Shape shape;
+    shape.type = ShapeType::Polygon;
+    // Boxes are the canonical polygon; SetPolygonAsBox orders vertices CCW from
+    // (+hx,-hy) so the same input always yields the same edge indices, which is
+    // what keeps ContactID (and therefore warm starting in Week 5) stable.
+    if (!SetPolygonAsBox(shape.polygon, halfWidth, halfHeight)) {
+        assert(false && "World::CreateBoxShape: half extents must be finite and > 0");
         return ShapeHandle{};
     }
     return AllocateShapeSlot(m_shapes, m_shapeIds, shape);
@@ -722,18 +768,50 @@ void World::UpdateContacts() {
             const Shape& shapeA = m_shapes[static_cast<std::size_t>(bodyA.shape.index)];
             const Shape& shapeB = m_shapes[static_cast<std::size_t>(bodyB.shape.index)];
 
-            // Week 2 narrow phase: analytic circle paths only. Polygon pairs
-            // arrive in Week 4; plane-plane can never touch (two half-spaces can
-            // always be pushed apart trivially, so it is not a contact).
+            // Week 4 narrow phase: analytic circle paths + polygon SAT/clipping.
+            // Plane-plane can never touch (two half-spaces can always be pushed
+            // apart trivially), so it is not a contact. The dispatch is by shape
+            // type of the lower-index body first, so the A/B normal convention
+            // stays explicit at every call site.
             Manifold manifold;
-            if (shapeA.type == ShapeType::Circle && shapeB.type == ShapeType::Circle) {
-                manifold = CollideCircles(shapeA.circle, bodyA.xf, shapeB.circle, bodyB.xf);
-            } else if (shapeA.type == ShapeType::Circle && shapeB.type == ShapeType::Plane) {
-                manifold = CollideCircleAndPlane(shapeA.circle, bodyA.xf, shapeB.plane, bodyB.xf);
-            } else if (shapeA.type == ShapeType::Plane && shapeB.type == ShapeType::Circle) {
-                manifold = CollidePlaneAndCircle(shapeA.plane, bodyA.xf, shapeB.circle, bodyB.xf);
-            } else {
-                continue;
+            SATCache satCache; // only meaningful for polygon-polygon contacts
+            const bool polygonPair = shapeA.type == ShapeType::Polygon && shapeB.type == ShapeType::Polygon;
+            if (shapeA.type == ShapeType::Circle) {
+                if (shapeB.type == ShapeType::Circle) {
+                    manifold = CollideCircles(shapeA.circle, bodyA.xf, shapeB.circle, bodyB.xf);
+                } else if (shapeB.type == ShapeType::Plane) {
+                    manifold = CollideCircleAndPlane(shapeA.circle, bodyA.xf, shapeB.plane, bodyB.xf);
+                } else {
+                    manifold = CollideCircleAndPolygon(shapeA.circle, bodyA.xf, shapeB.polygon, bodyB.xf);
+                }
+            } else if (shapeA.type == ShapeType::Plane) {
+                if (shapeB.type == ShapeType::Circle) {
+                    manifold = CollidePlaneAndCircle(shapeA.plane, bodyA.xf, shapeB.circle, bodyB.xf);
+                } else if (shapeB.type == ShapeType::Plane) {
+                    continue;
+                } else {
+                    manifold = CollidePlaneAndPolygon(shapeA.plane, bodyA.xf, shapeB.polygon, bodyB.xf);
+                }
+            } else { // A is a Polygon
+                if (shapeB.type == ShapeType::Circle) {
+                    manifold = CollidePolygonAndCircle(shapeA.polygon, bodyA.xf, shapeB.circle, bodyB.xf);
+                } else if (shapeB.type == ShapeType::Plane) {
+                    manifold = CollidePolygonAndPlane(shapeA.polygon, bodyA.xf, shapeB.plane, bodyB.xf);
+                } else {
+                    // SAT hysteresis (Week 4 D6): feed the previous frame's
+                    // reference face when the feature is enabled. The cache only
+                    // breaks near-ties; it never changes the physical result, so
+                    // enabling/disabling it must stay equivalent.
+                    SATCache* cacheHint = nullptr;
+                    if (m_solverSettings.useSatCache) {
+                        if (const Contact* previous =
+                                FindPreviousContact(m_previousContacts, bodyA.handle, bodyB.handle)) {
+                            satCache = previous->satCache;
+                        }
+                        cacheHint = &satCache;
+                    }
+                    manifold = CollidePolygons(shapeA.polygon, bodyA.xf, shapeB.polygon, bodyB.xf, cacheHint);
+                }
             }
             if (!manifold.IsTouching()) {
                 continue;
@@ -749,6 +827,12 @@ void World::UpdateContacts() {
             contact.restitution =
                 (bodyA.restitution > bodyB.restitution) ? bodyA.restitution : bodyB.restitution;
             contact.isPersistent = MatchAndInheritImpulses(contact, m_previousContacts);
+            if (polygonPair) {
+                // Persist the reference-face choice for the next frame (the cache
+                // is invalid when caching is disabled, which is exactly the
+                // nullptr-hint path above).
+                contact.satCache = satCache;
+            }
             m_contacts.push_back(contact);
         }
     }

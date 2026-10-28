@@ -101,6 +101,12 @@ struct SolverSettings {
     int32_t velocityIterations = kVelocityIterations;
     int32_t positionIterations = kPositionIterations;
 
+    // Week 4 D6: SAT axis hysteresis (see Collision/SATCache.h). Keeping the
+    // previous reference face among near-tied axes stabilises ContactID keys on
+    // resting stacks; disabling it must not change the physical result, only the
+    // amount of manifold/contact-key churn (used for the D6 comparison experiment).
+    bool useSatCache = true;
+
     float warmStartFactor = kWarmStartFactor;
     bool useWarmStarting = true;
 

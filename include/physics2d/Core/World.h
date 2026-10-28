@@ -107,6 +107,13 @@ class World {
     [[nodiscard]] ShapeHandle CreateCircleShape(float radius, Vec2 localCenter = Vec2(0.0f, 0.0f));
     [[nodiscard]] ShapeHandle CreatePlaneShape(Vec2 normal, float offset = 0.0f);
 
+    // Week 4: convex polygon from a CCW vertex array / axis-aligned box centred on
+    // the body origin. Invalid input (too few/many vertices, duplicate, collinear,
+    // non-convex or clockwise winding) returns an invalid handle plus a debug
+    // assert; see PolygonShape.h for the full validation contract.
+    [[nodiscard]] ShapeHandle CreatePolygonShape(const Vec2* vertices, int32_t count);
+    [[nodiscard]] ShapeHandle CreateBoxShape(float halfWidth, float halfHeight);
+
     // Attaches (or replaces) the body's shape and recomputes mass/inertia from
     // density * shape mass properties (parallel-axis transfer to the body
     // origin). A PlaneShape is only valid on a Static body (infinite mass);

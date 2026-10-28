@@ -14,6 +14,7 @@
 
 #include "physics2d/Collision/CircleShape.h"
 #include "physics2d/Collision/PlaneShape.h"
+#include "physics2d/Collision/PolygonShape.h"
 #include "physics2d/Collision/ShapeTypes.h"
 #include "physics2d/Math/AABB.h"
 #include "physics2d/Math/Transform.h"
@@ -23,13 +24,12 @@ namespace p2 {
 struct Shape {
     ShapeType type = ShapeType::Circle;
 
-    // Only the member matching `type` is meaningful. A tagged union with two
+    // Only the member matching `type` is meaningful. A tagged union with three
     // small values is simpler and safer than std::variant here (no exception
     // path, trivially copyable, debuggable in a watch window).
     CircleShape circle;
     PlaneShape plane;
-
-    // PolygonShape polygon;  // reserved: Week 4 (P04/P07)
+    PolygonShape polygon; // Week 4
 
     [[nodiscard]] bool IsValid() const noexcept;
 };
