@@ -1,5 +1,5 @@
 // physics2d_testbed - interactive testbed entry point (Week 1 D5/D6, extended in
-// Week 2 with the contact overlay and in Week 3 with multiple selectable scenes).
+// Week 2 with the contact overlay and in Weeks 3-4 with multiple selectable scenes).
 //
 // Responsibilities (and nothing else):
 //   1. Create the GLFW window / OpenGL 3.3 core context and initialise Dear ImGui
@@ -20,8 +20,8 @@
 // previous-state caching that does not exist until then.
 //
 // CLI:
-//   --demo NAME choose the initial scene (FallingBall | SphereStack, default
-//               FallingBall). Matching is case-insensitive and ignores spaces,
+//   --demo NAME choose the initial scene (FallingBall | SphereStack | BoxStack,
+//               default FallingBall). Matching is case-insensitive and ignores spaces,
 //               underscores and hyphens, so "spherestack" and "Sphere Stack" both
 //               work. An unknown name prints the available list and exits with code
 //               2 so smoke automation can distinguish a typo from a physics failure.
@@ -36,6 +36,7 @@
 #include "DebugUI.h"
 #include "GLLoader.h"
 #include "Renderer.h"
+#include "demos/BoxStack.h"
 #include "demos/FallingBall.h"
 #include "demos/SphereStack.h"
 
@@ -95,7 +96,8 @@ struct CommandLineOptions {
 // turns the usage line into mojibake.
 void PrintUsage() {
     std::printf("Usage: physics2d_testbed [--demo NAME] [--smoke N] [--hidden] [--help]\n"
-                "  --demo NAME start in this scene (FallingBall | SphereStack; default FallingBall).\n"
+                "  --demo NAME start in this scene (FallingBall | SphereStack | BoxStack;\n"
+                "              default FallingBall).\n"
                 "              Matching is case-insensitive and ignores spaces/underscores.\n"
                 "  --smoke N   render N frames, print a summary and exit (0 = pass, 2 = no GL environment\n"
                 "              or unknown demo name)\n"
@@ -343,6 +345,7 @@ int RunTestbed(const CommandLineOptions& options) {
     std::vector<std::unique_ptr<p2::Demo>> demos;
     demos.push_back(std::make_unique<p2::FallingBallDemo>());
     demos.push_back(std::make_unique<p2::SphereStackDemo>());
+    demos.push_back(std::make_unique<p2::BoxStackDemo>());
     std::vector<const char*> demoNames;
     demoNames.reserve(demos.size());
     for (const std::unique_ptr<p2::Demo>& demo : demos) {
@@ -617,7 +620,9 @@ int RunTestbed(const CommandLineOptions& options) {
             compactDemoName.c_str(), frameIndex, totalPhysicsSteps, world.GetBodyCount(),
             world.GetShapeCount(), world.GetContactCount(), averageFrameMilliseconds);
 
-        constexpr int kMaxBodiesPrinted = 8;
+        // 16 bodies / 16 contacts covers the largest current scene (BoxStack: 11 bodies,
+        // 10 contacts) without turning the smoke log into a wall of text.
+        constexpr int kMaxBodiesPrinted = 16;
         int printedBodyCount = 0;
         for (const p2::Body& body : world.GetBodies()) {
             if (!body.handle.IsValid() || !world.IsValid(body.handle)) {
@@ -625,17 +630,20 @@ int RunTestbed(const CommandLineOptions& options) {
             }
             const p2::Vec2 position = world.GetPosition(body.handle);
             const p2::Vec2 velocity = world.GetLinearVelocity(body.handle);
-            std::printf("[smoke] body='%s' position=(%.3f, %.3f) velocity=(%.3f, %.3f)\n",
-                        body.debugName.c_str(), position.x, position.y, velocity.x, velocity.y);
+            // Angle is reported in degrees: the Week 4 acceptance check for BoxStack is
+            // "how far did each box tilt", and radians are hard to judge in a log.
+            const float angleDegrees = world.GetAngle(body.handle) * p2::kRadToDeg;
+            std::printf("[smoke] body='%s' position=(%.3f, %.3f) velocity=(%.3f, %.3f) angle=%.2fdeg\n",
+                        body.debugName.c_str(), position.x, position.y, velocity.x, velocity.y, angleDegrees);
             if (++printedBodyCount >= kMaxBodiesPrinted) {
                 break;
             }
         }
 
         // Contact state: pair names, manifold point count and penetration in mm. A
-        // resting stack prints its three contacts here, which is how the log tells a
-        // standing stack apart from a collapsed one that separated into free fall.
-        constexpr int kMaxContactsPrinted = 8;
+        // resting tower prints its contacts here, which is how the log tells a
+        // standing stack apart from a collapsed one that scattered into free fall.
+        constexpr int kMaxContactsPrinted = 16;
         int printedContactCount = 0;
         for (const p2::Contact& contact : world.GetContacts()) {
             if (!contact.manifold.IsTouching()) {
