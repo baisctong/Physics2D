@@ -1,11 +1,13 @@
 #pragma once
 
-// p2::DebugUI - the testbed's control and status panels (Week 1 D5/D6).
+// p2::DebugUI - the testbed's control and status panels (Week 1 D5/D6, extended
+// in Week 2 with contact statistics and contact/normal display toggles).
 //
-// Week 1 deliberately keeps the UI plain (Section 5, Week 1 trap warning: do not
-// polish the ImGui panels before the simulation is trustworthy). It exposes only
+// The panels stay deliberately plain (Section 5, Week 1 trap warning: do not
+// polish the ImGui panels before the simulation is trustworthy). They expose only
 // what the current simulation supports: playback control, the gravity slider
-// wired to World::SetGravity, the demo selector, and a few display toggles.
+// wired to World::SetGravity, the demo selector, display toggles, and - since
+// Week 2 - the contact count / penetration produced by the narrow phase.
 //
 // The panel owns its UI state (paused / speed / demo selection). The host loop
 // owns the simulation state; the two are connected through the FrameActions
@@ -32,9 +34,13 @@ class DebugUI {
     };
 
     // Display switches consumed by the render loop after the demo has drawn.
+    // Week 2 adds the contact overlay: contact points are drawn in red and the
+    // manifold normal (from body A toward body B) as a fixed-length arrow.
     struct DisplayOptions {
         bool showAxes = true;
         bool showAabb = false;
+        bool showContacts = true;
+        bool showNormals = false;
     };
 
     // One-frame commands. They are edges, not states: main.cpp applies them once

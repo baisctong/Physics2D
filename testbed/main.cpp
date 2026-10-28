@@ -1,4 +1,5 @@
-// physics2d_testbed - interactive testbed entry point (Week 1 D5/D6).
+// physics2d_testbed - interactive testbed entry point (Week 1 D5/D6, extended in
+// Week 2 with the contact overlay and the plane-ground scene).
 //
 // Responsibilities (and nothing else):
 //   1. Create the GLFW window / OpenGL 3.3 core context and initialise Dear ImGui
@@ -6,6 +7,10 @@
 //   2. Run the frame loop: poll input -> draw UI -> run fixed physics steps ->
 //      render world and UI -> swap.
 //   3. Own the World, the demo registry and the camera; demos only see those.
+//   4. Draw engine-level debug overlays (axes, AABBs, contact points and contact
+//      normals) after the demo. They live here because World owns that data and the
+//      Demo interface has no display-option parameter, so every scene gets the same
+//      debug view from one place.
 //
 // Fixed timestep: p2::StepAccumulator turns the variable frame time into a whole
 // number of 1/60 s steps (Section 4.3), at most kMaxStepsPerFrame per frame to stop
@@ -60,6 +65,15 @@ constexpr const char* kWindowTitle = "Physics2D Testbed";
 // GLSL 330 core matches the requested OpenGL 3.3 core context.
 constexpr const char* kGlslVersion = "#version 330 core";
 
+// Contact overlay styling. The normal arrow has a fixed length (0.5 m): scaling it
+// by penetration would make the arrow vanish exactly when the contact is resting and
+// would visually conflate two different quantities.
+constexpr float kContactPointRadius = 0.07f;
+constexpr float kContactNormalLength = 0.5f;
+constexpr float kContactArrowHeadLength = 0.15f;
+constexpr p2::Color kContactPointColor{0.95f, 0.25f, 0.25f, 1.0f};
+constexpr p2::Color kContactNormalColor{1.00f, 0.85f, 0.20f, 1.0f};
+
 struct CommandLineOptions {
     int smokeFrames = 0; // 0 means interactive mode
     bool hidden = false;
@@ -108,6 +122,44 @@ void PrintUsage() {
 void GlfwErrorCallback(int errorCode, const char* description) {
     std::fprintf(stderr, "[testbed] GLFW error %d: %s\n", errorCode,
                  description != nullptr ? description : "(no description)");
+}
+
+// ---- contact debug overlay (Week 2) -----------------------------------------
+// Contact points are the manifold anchors. A point is stored in each body's local
+// frame (localPointA/localPointB); both describe the same world position, so
+// transforming one with its owner's transform is enough.
+
+void DrawContactPoints(p2::Renderer& renderer, const p2::World& world) {
+    for (const p2::Contact& contact : world.GetContacts()) {
+        if (!contact.manifold.IsTouching()) {
+            continue;
+        }
+        const p2::Transform transformA = world.GetTransform(contact.bodyA);
+        for (int32_t pointIndex = 0; pointIndex < contact.manifold.pointCount; ++pointIndex) {
+            const p2::Vec2 worldPoint = p2::Mul(transformA, contact.manifold.points[pointIndex].localPointA);
+            renderer.DrawCircle(worldPoint, kContactPointRadius, kContactPointColor, 12);
+            renderer.DrawPoint(worldPoint, kContactPointColor, kContactPointRadius);
+        }
+    }
+}
+
+// The manifold normal points from body A toward body B (Section 4.2, normative).
+// World normalises the pair order by body handle index, so in this scene the ground
+// is created first and is therefore A: the arrow points up out of the surface. The
+// overlay draws the stored direction and never flips it locally, exactly like the
+// solver, so a wrong normal convention stays visible instead of being masked.
+void DrawContactNormals(p2::Renderer& renderer, const p2::World& world) {
+    for (const p2::Contact& contact : world.GetContacts()) {
+        if (!contact.manifold.IsTouching()) {
+            continue;
+        }
+        const p2::Transform transformA = world.GetTransform(contact.bodyA);
+        for (int32_t pointIndex = 0; pointIndex < contact.manifold.pointCount; ++pointIndex) {
+            const p2::Vec2 worldPoint = p2::Mul(transformA, contact.manifold.points[pointIndex].localPointA);
+            renderer.DrawArrow(worldPoint, worldPoint + contact.manifold.normal * kContactNormalLength,
+                               kContactNormalColor, kContactArrowHeadLength);
+        }
+    }
 }
 
 // --- RAII wrappers ------------------------------------------------------------
@@ -272,7 +324,7 @@ int RunTestbed(const CommandLineOptions& options) {
     }
 
     // ---- demo registry ------------------------------------------------------
-    // Week 1 ships exactly one scene; the container and iteration are the shape
+    // Week 2 still ships exactly one scene; the container and iteration are the shape
     // the later weeks' scene list uses, so adding SphereStack/Dominoes is one line.
     std::vector<std::unique_ptr<p2::Demo>> demos;
     demos.push_back(std::make_unique<p2::FallingBallDemo>());
@@ -407,14 +459,22 @@ int RunTestbed(const CommandLineOptions& options) {
 
         renderer.Begin(camera);
         currentDemo.Draw(renderer, world);
+        // Contact overlay before the static debug geometry so the contact markers are
+        // the brightest thing on screen when a contact exists.
+        if (displayOptions.showContacts) {
+            DrawContactPoints(renderer, world);
+        }
+        if (displayOptions.showNormals) {
+            DrawContactNormals(renderer, world);
+        }
         if (displayOptions.showAxes) {
             renderer.DrawAxes(5.0f);
         }
         if (displayOptions.showAabb) {
-            // Week 1 bodies have no shapes, so Body::aabb is still the default
-            // empty box; drawing it would litter the origin with degenerate
-            // rectangles. The toggle is wired now so Week 2 onwards only needs the
-            // AABB computation, not a new UI path.
+            // Week 2: Synchronize() fills Body::aabb from the attached shapes. The
+            // infinite plane's AABB is deliberately enormous and lies outside the
+            // view, so only finite shapes (the ball) show a visible box. The
+            // degeneracy guard keeps bodies without a shape from littering the origin.
             for (const p2::Body& body : world.GetBodies()) {
                 if (!body.handle.IsValid() || !world.IsValid(body.handle)) {
                     continue;
@@ -449,19 +509,26 @@ int RunTestbed(const CommandLineOptions& options) {
     if (smokeMode) {
         const double averageFrameMilliseconds =
             frameIndex > 0 ? totalFrameMilliseconds / static_cast<double>(frameIndex) : 0.0;
-        // One machine-readable line for the Lead's automated verification. The
-        // extra body-position line below is evidence that the integrator really ran
-        // (the first body should have fallen from its spawn height).
-        std::printf("[smoke] frames=%d physics_steps=%d bodies=%d avg_frame_ms=%.3f\n", frameIndex,
-                    totalPhysicsSteps, world.GetBodyCount(), averageFrameMilliseconds);
+        // One machine-readable line for the Lead's automated verification. Week 2 adds
+        // the shape/contact counts: a resting ball must show contacts >= 1 at the end
+        // of the run. The per-body lines below give the final ball height, which the
+        // timing statistics cannot show.
+        std::printf("[smoke] frames=%d physics_steps=%d bodies=%d shapes=%d contacts=%d avg_frame_ms=%.3f\n",
+                    frameIndex, totalPhysicsSteps, world.GetBodyCount(), world.GetShapeCount(),
+                    world.GetContactCount(), averageFrameMilliseconds);
+        constexpr int kMaxBodiesPrinted = 8;
+        int printedBodyCount = 0;
         for (const p2::Body& body : world.GetBodies()) {
             if (!body.handle.IsValid() || !world.IsValid(body.handle)) {
                 continue;
             }
             const p2::Vec2 position = world.GetPosition(body.handle);
-            std::printf("[smoke] first_body='%s' position=(%.3f, %.3f)\n", body.debugName.c_str(), position.x,
-                        position.y);
-            break;
+            const p2::Vec2 velocity = world.GetLinearVelocity(body.handle);
+            std::printf("[smoke] body='%s' position=(%.3f, %.3f) velocity=(%.3f, %.3f)\n",
+                        body.debugName.c_str(), position.x, position.y, velocity.x, velocity.y);
+            if (++printedBodyCount >= kMaxBodiesPrinted) {
+                break;
+            }
         }
     } else if (frameIndex > 0) {
         std::printf("[testbed] closed after %d frames, %d physics steps\n", frameIndex, totalPhysicsSteps);

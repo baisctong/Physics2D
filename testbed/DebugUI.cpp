@@ -4,12 +4,14 @@
 
 #include <imgui.h>
 
+#include <algorithm>
+
 namespace p2 {
 namespace {
 
-// Playback speeds from the design document's Week 1 panel spec. The multiplier
-// scales how much simulated time one rendered frame contributes, so physics stays
-// on the same fixed dt and only the accumulator feed changes (Section 4.3).
+// Playback speeds from the design document's panel spec. The multiplier scales how
+// much simulated time one rendered frame contributes, so physics stays on the same
+// fixed dt and only the accumulator feed changes (Section 4.3).
 constexpr int kSpeedCount = 3;
 constexpr float kSpeedMultipliers[kSpeedCount] = {1.0f, 0.5f, 0.25f};
 constexpr const char* kSpeedLabels[kSpeedCount] = {"1x", "0.5x", "0.25x"};
@@ -18,6 +20,11 @@ constexpr const char* kSpeedLabels[kSpeedCount] = {"1x", "0.5x", "0.25x"};
 // the user flip gravity upwards to sanity-check the integrator sign convention.
 constexpr float kMinGravityY = -50.0f;
 constexpr float kMaxGravityY = 10.0f;
+
+// Penetration is displayed in millimetres: the interesting Week 2 values are the
+// tolerated slop (5 mm) and the transient overlap during a landing, which are
+// unreadable as metres in a status panel.
+constexpr float kMillimetersPerMeter = 1000.0f;
 
 } // namespace
 
@@ -52,7 +59,7 @@ void DebugUI::DrawControlPanel(World& world, Demo& currentDemo, const std::vecto
     ImGui::SetNextWindowSize(ImVec2(340.0f, 470.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("Testbed Controls");
 
-    ImGui::TextUnformatted("Physics2D testbed - Week 1");
+    ImGui::TextUnformatted("Physics2D testbed - Week 2");
     ImGui::Separator();
 
     if (!demoNames.empty()) {
@@ -106,7 +113,11 @@ void DebugUI::DrawControlPanel(World& world, Demo& currentDemo, const std::vecto
     ImGui::Separator();
     ImGui::TextUnformatted("Display");
     ImGui::Checkbox("World axes", &display.showAxes);
-    ImGui::Checkbox("Body AABBs (Week 2+)", &display.showAabb);
+    ImGui::Checkbox("Body AABBs", &display.showAabb);
+    // Week 2 contact visualisation: points are the manifold anchors, normals show the
+    // A->B direction the temporary response acts along.
+    ImGui::Checkbox("Contact points", &display.showContacts);
+    ImGui::Checkbox("Contact normals", &display.showNormals);
     ImGui::Checkbox("Dear ImGui demo window", &m_showImGuiDemo);
 
     ImGui::Separator();
@@ -128,7 +139,7 @@ void DebugUI::DrawStatusPanel(const World& world, const Demo& currentDemo, const
     ImGui::SetNextWindowPos(
         ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - kPanelWidth - 12.0f, viewport->WorkPos.y + 12.0f),
         ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(kPanelWidth, 220.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(kPanelWidth, 260.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("Status");
 
     ImGui::Text("FPS: %.1f", stats.framesPerSecond);
@@ -138,7 +149,24 @@ void DebugUI::DrawStatusPanel(const World& world, const Demo& currentDemo, const
 
     ImGui::Separator();
     ImGui::Text("Scene: %s", currentDemo.Name());
-    ImGui::Text("Bodies: %d   Awake: %d", world.GetBodyCount(), world.GetAwakeBodyCount());
+    ImGui::Text("Bodies: %d   Shapes: %d   Awake: %d", world.GetBodyCount(), world.GetShapeCount(),
+                world.GetAwakeBodyCount());
+
+    // Week 2 contact statistics. Only touching manifolds count; a pair with
+    // pointCount == 0 is separated and is not part of the contact list anyway, but
+    // guarding keeps the panel correct if that changes later.
+    int32_t touchingContacts = 0;
+    float maxPenetration = 0.0f;
+    for (const Contact& contact : world.GetContacts()) {
+        if (!contact.manifold.IsTouching()) {
+            continue;
+        }
+        ++touchingContacts;
+        maxPenetration = std::max(maxPenetration, contact.manifold.penetration);
+    }
+    ImGui::Text("Contacts: %d   Max penetration: %.2f mm", touchingContacts,
+                maxPenetration * kMillimetersPerMeter);
+
     const Vec2 gravity = world.GetGravity();
     ImGui::Text("Gravity: (%.1f, %.1f) m/s^2", gravity.x, gravity.y);
     ImGui::Text("Fixed dt: %.5f s", kFixedTimeStep);
