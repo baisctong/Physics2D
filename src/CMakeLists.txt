@@ -14,6 +14,10 @@ add_library(physics2d_core STATIC
     Core/Body.cpp
     Core/World.cpp
     Core/TimeStep.cpp
+    Core/Shape.cpp
+    Collision/CircleShape.cpp
+    Collision/PlaneShape.cpp
+    Collision/Analytic.cpp
 )
 
 add_library(p2::core ALIAS physics2d_core)

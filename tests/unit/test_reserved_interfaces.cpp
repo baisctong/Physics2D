@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include "physics2d/Collision/Contact.h"
 #include "physics2d/Collision/ContactID.h"
 #include "physics2d/Collision/Manifold.h"
 #include "physics2d/Core/Body.h"
@@ -26,7 +27,6 @@
 #include "physics2d/Math/Rot.h"
 #include "physics2d/Math/Transform.h"
 #include "physics2d/Math/Vec2.h"
-#include "physics2d/Solver/Contact.h"
 
 #include <cmath>
 #include <cstdint>
