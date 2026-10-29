@@ -41,8 +41,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset de
 .\build\debug\testbed\physics2d_testbed.exe
 ```
 
-> 本机没有 `pwsh`（PowerShell 7），请使用 `powershell`；命令中的 `-NoProfile` 可以避免
-> 用户 profile 干扰 MSVC 环境变量。
+> 本机**已安装 PowerShell 7（`pwsh` 7.6.9，WindowsApps 别名可用），但请统一使用 Windows PowerShell 5.1
+> 的 `powershell`**：`build.ps1` 在 PS7 下会因 `$isWindows` 只读自动变量报错（尚未适配）；本文命令均按
+> PS 5.1 验证。命令中的 `-NoProfile` 可以避免用户 profile 干扰 MSVC 环境变量。
 
 ### 2.1 预设一览（Ninja）
 
@@ -134,7 +135,7 @@ Week 5 加摩擦 + warm starting 后会站立（`v0.5-stable-stack` 里程碑）
 
 | 症状 | 原因 / 处理 |
 | --- | --- |
-| `pwsh : 无法将"pwsh"项识别为...` | 本机只有 Windows PowerShell 5.1，把命令里的 `pwsh` 换成 `powershell` |
+| `pwsh : 无法将"pwsh"项识别为...` | 旧环境才会出现（本机现已装 PowerShell 7）；遇到时把命令里的 `pwsh` 换成 `powershell`——本仓库命令统一用 `powershell`（`build.ps1` 在 PS7 下未适配） |
 | `Ninja not found` | 跑一次 `scripts/bootstrap.ps1`，或用 `vs2022-*` 预设 |
 | 把 Ninja 放进仓库 `tools/` 后报 `Permission denied` / `cl error D8050` | 本环境会限制"可执行文件位于工作区内部"的子进程写文件；Ninja 必须放在仓库外（VS 自带或 `%LOCALAPPDATA%`），`build.ps1` 已自动处理 |
 | configure 报 `cl.exe ... is not able to compile a simple test program` | 确认 VS 装了 C++ 工作负载；用 `build.ps1`（自动 import vcvars）而不是裸 `cmake`；清掉 `build/<preset>` 重试 |

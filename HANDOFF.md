@@ -15,8 +15,9 @@
 >
 > 原始设计文档（仓库外）：`E:\Big Fat Fish's Workstation\2D物理引擎项目\2D物理引擎项目完整工作流与DeepSeek提示词库.md`
 > 仓库路径：`E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D`
-> 当前 HEAD：tag `v0.7-island-sleep` **之后**的一个 docs 提交（新增 `docs/testing.md` 手动测试指南；
-> `git log -1` / `git describe --tags` 为准）。代码与测试状态对应 tag `v0.7-island-sleep`。
+> 当前 HEAD：tag `v0.7-island-sleep` **之后**的 docs 提交（新增 `docs/testing.md` 手动测试指南、
+> 修正本机 PowerShell 7 说明；`git log -1` / `git describe --tags` 为准）。代码与测试状态对应 tag
+> `v0.7-island-sleep`。
 
 ---
 
@@ -61,8 +62,9 @@
 > smoke/bench/回归/death tests、FAQ、验收清单）在 [`docs/testing.md`](docs/testing.md)。
 > 下面是最短的官方基线，必须首先通过。
 
-> 本机只有 **Windows PowerShell 5.1（没有 `pwsh`）**，且首次 configure 会联网 FetchContent
-> 下载依赖（1-2 分钟）。命令必须在仓库根目录执行。
+> 本机**已装 PowerShell 7（`pwsh` 7.6.9），但仓库命令统一用 Windows PowerShell 5.1**：`build.ps1`
+> 在 PS7 下会因 `$isWindows` 只读自动变量报错（尚未适配，见 `docs/dev-setup.md` §6）；
+> 首次 configure 会联网 FetchContent 下载依赖（1-2 分钟）。命令必须在仓库根目录执行。
 
 ```powershell
 cd "E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D"
@@ -126,7 +128,8 @@ bench（**Release**，数字必须可复现，表格见 README）：
 
 **怀疑环境坏了时**（先看 `docs/dev-setup.md` §6）：
 
-- `pwsh` 不存在是正常的，用 `powershell`；
+- 本机已装 `pwsh`（PowerShell 7.6.9），但统一用 `powershell`：`build.ps1` 在 PS7 下会因
+  `$isWindows` 只读自动变量报错（尚未适配）；
 - Ninja 必须在仓库外（`scripts/build.ps1` 自动从 VS 安装目录找）；把 Ninja 放进 `tools/` 会触发
   `cl D8050` / `Permission denied`（沙箱限制）；
 - **本机增量构建坑（重要）**：中文 locale 的 cl.exe 把 `/showIncludes` 打成 `注意: 包含文件:`，

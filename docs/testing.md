@@ -2,7 +2,8 @@
 
 > 面向两类读者：**人类用户**想亲手验收这个引擎；**换会话的新 AI** 需要知道怎么复现全部验证。
 > 所有命令在仓库根目录执行（`cd "E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D"`）。
-> 本机只有 **Windows PowerShell 5.1（没有 `pwsh`）**，构建一律走 `scripts/build.ps1`。
+> 本机**已装 PowerShell 7（`pwsh` 7.6.9），但构建一律走 `powershell`（PS 5.1）**：`scripts/build.ps1`
+> 在 PS7 下会因 `$isWindows` 只读自动变量报错（尚未适配）；本文命令均按 PS 5.1 验证。
 >
 > 当前基线（tag `v0.7-island-sleep`）：**debug 354 / release 355 / sanitize 354 个 ctest 全绿、
 > 0 警告**；8 个 demo smoke 全 exit 0；回归弱 hash `588d30e70f9b4ddd`。数字随机器/噪声略有浮动，
@@ -302,7 +303,7 @@ Pop-Location
 
 | 现象 | 原因 / 处理 |
 | --- | --- |
-| `pwsh : 无法将"pwsh"项识别为...` | 本机只有 PowerShell 5.1，把 `pwsh` 换成 `powershell`（或直接用仓库脚本） |
+| `pwsh : 无法将"pwsh"项识别为...` | 旧环境才会出现（本机现已装 PowerShell 7）；遇到时把 `pwsh` 换成 `powershell` 即可——本仓库命令统一用 `powershell`（`build.ps1` 在 PS7 下未适配） |
 | `ctest --preset debug` 报 no such test preset | ctest 的 preset 名不是 `debug`；用 `ctest --test-dir build/debug` 或直接 `build.ps1 -RunTests` |
 | ctest 显示 15 个 Skipped | 正常，sandbox death tests；见 §8 |
 | ctest 用例数 debug 354 / release 355 | 正常：release 多 1 个 release-only 契约测试 |

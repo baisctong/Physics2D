@@ -83,8 +83,10 @@ Week 8 为文档/交付周）。详见 `docs/ROADMAP.md` 与 `docs/devlog.md`。
 
 **Windows 注意事项（很重要）**
 
-1. 本机只有 **Windows PowerShell 5.1，没有 `pwsh`**。命令一律用：
-   `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 ...`
+1. 本机**已安装 PowerShell 7（`pwsh` 7.6.9，WindowsApps 别名可用），但仓库命令/构建脚本统一用
+   Windows PowerShell 5.1**：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 ...`
+   （`build.ps1` 在 PS7 下会在 `$isWindows` 只读自动变量处报错，尚未适配；`pwsh` 只用于临时命令，
+   不参与验证基线）。
 2. **Ninja 不能放在仓库内**：本机 DSH agent 沙箱会拒绝"可执行文件位于工作区内部"的子进程写文件，
    表现为 `cl ... error D8050` / `.ninja_lock Permission denied`。
    `scripts/build.ps1` 会自动使用 VS 自带 Ninja（或 `%LOCALAPPDATA%\Physics2D\tools`），不要复制到 `tools/`。
