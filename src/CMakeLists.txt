@@ -25,6 +25,7 @@ add_library(physics2d_core STATIC
     Collision/BroadPhaseSAP.cpp
     Solver/ContactSolver.cpp
     Solver/ContactSolverPosition.cpp
+    Solver/Island.cpp
 )
 
 add_library(p2::core ALIAS physics2d_core)

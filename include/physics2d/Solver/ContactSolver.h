@@ -148,6 +148,37 @@ class ContactSolver {
     // state leaks across scene rebuilds.
     void ClearPseudoVelocities(std::vector<Body>& bodies) const;
 
+    // ---- Week 7: island partition (P13) ----------------------------------
+    // Installs the canonical island partition built by World::BuildIslands. When
+    // installed, Prepare/SolveVelocity/SolvePosition process contacts island by
+    // island: islands in canonical order (smallest body index first), contact
+    // indices ascending (global order) inside each island, and sleeping islands
+    // (all member bodies asleep) skipped entirely. Because constraints from
+    // different islands touch disjoint body sets, this grouped order is
+    // BIT-IDENTICAL to the flat Week 6 order - the P13 "与不按岛求解的结果 hash
+    // 一致" requirement.
+    //
+    // The velocity solve has two interchangeable variants selected by
+    // SolverSettings::packIslandBodies: direct (default; reads/writes the Body
+    // array) and packed (copies the island's hot state into a contiguous scratch
+    // array - the design-document layout for very large scenes). The packed
+    // variant measured slower on the Week 7 dense-island benchmark, so it is
+    // opt-in; both are bit-identical and covered by the three-mode test.
+    //
+    // The pointers must stay valid while installed. World passes its own member
+    // vectors, which live as long as the World; tests may install their own.
+    // Passing nullptr (or never calling this) means flat mode, i.e. exactly the
+    // Week 6 behaviour. An INSTALLED but EMPTY partition (zero islands, e.g. a
+    // scene with no dynamic bodies or the Week 7 DFS placeholder) is also treated
+    // as flat mode, so the tree stays functional while the DFS lands.
+    void SetIslandPartition(const std::vector<std::vector<int32_t>>* islandBodies,
+                            const std::vector<std::vector<int32_t>>* islandContacts);
+    void ClearIslandPartition() noexcept {
+        m_islandBodyIndices = nullptr;
+        m_islandContactIndices = nullptr;
+    }
+    [[nodiscard]] bool HasIslandPartition() const noexcept { return m_islandBodyIndices != nullptr; }
+
     // ---- math helpers, public so unit tests can pin the formulas (P08 D1/D2) ----
 
     // K_n = invMassA + invMassB + invIA*Cross(rA,n)^2 + invIB*Cross(rB,n)^2
@@ -178,7 +209,60 @@ class ContactSolver {
     void Clear() noexcept { m_constraints.clear(); }
 
   private:
+    // ---- Week 7: island-grouped solving (P13) ----------------------------
+    // Hot per-body state the velocity iterations actually touch. The island path
+    // copies an island's bodies into a contiguous array of these, solves there and
+    // writes back; the flat path works on Body directly. Both paths run the same
+    // arithmetic on the same bit patterns, which is what keeps the grouped result
+    // bit-identical to the flat one.
+    struct PackedSolverBody {
+        Vec2 linearVelocity{0.0f, 0.0f};
+        float angularVelocity = 0.0f;
+        float invMass = 0.0f;
+        float invInertia = 0.0f;
+    };
+
+    // [begin, end) range of m_constraints belonging to one island, in canonical
+    // island order. A sleeping island (or one without contacts) has begin == end.
+    struct IslandConstraintRange {
+        int32_t begin = 0;
+        int32_t end = 0;
+        bool asleep = false;
+    };
+
+    // True when the installed partition is usable: both pointers set, non-empty
+    // and same size. An installed-but-empty partition is the documented flat-mode
+    // fallback (placeholder / scene without dynamic bodies).
+    [[nodiscard]] bool UsesIslandPartition() const noexcept;
+
+    // Builds the constraints of one contact. Shared by the flat and the grouped
+    // Prepare so both orders run identical per-contact code.
+    void BuildConstraintsForContact(const std::vector<Body>& bodies, std::vector<Contact>& contacts,
+                                    size_t contactIndex, const SolverSettings& settings, float dt);
+
+    // Copies the bodies referenced by island `islandIndex` (dynamic members and
+    // the static/kinematic boundary bodies of its contacts) into m_packedBodies.
+    void PackIslandBodies(const std::vector<Body>& bodies, const std::vector<Contact>& contacts,
+                          int32_t islandIndex);
+
+    // Writes the packed island velocities back into the Body slots.
+    void WriteBackPackedBodies(std::vector<Body>& bodies);
+
     std::vector<ContactConstraintPoint> m_constraints;
+
+    // Week 7: non-owning view of the World's canonical island partition. Both
+    // pointers are null in flat mode. The contact lists are ascending global
+    // contact indices; see Solver/Island.h for the determinism contract.
+    const std::vector<std::vector<int32_t>>* m_islandBodyIndices = nullptr;
+    const std::vector<std::vector<int32_t>>* m_islandContactIndices = nullptr;
+
+    // Grouped-iteration cache, rebuilt by Prepare every frame.
+    std::vector<IslandConstraintRange> m_islandConstraintRanges;
+    std::vector<PackedSolverBody> m_packedBodies;
+    std::vector<int32_t> m_packedBodyIndices; // packed slot -> body slot index
+    std::vector<int32_t> m_packedSlotOfBody;  // body slot -> packed slot (stamped)
+    std::vector<int32_t> m_packedStamp;       // body slot -> pack generation
+    int32_t m_packGeneration = 0;
 };
 
 } // namespace p2

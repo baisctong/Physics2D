@@ -112,7 +112,9 @@ void ContactSolver::SolvePosition(std::vector<Body>& bodies, std::vector<Contact
 
     const float betaOverDt = settings.splitImpulseBeta / dt;
 
-    for (size_t contactIndex = 0; contactIndex < contacts.size(); ++contactIndex) {
+    // Builds the position constraints of one contact. Shared by the flat and the
+    // grouped pass so the per-contact arithmetic cannot drift between modes.
+    const auto buildContact = [&](size_t contactIndex) {
         const Contact& contact = contacts[contactIndex];
         const Body& bodyA = bodies[static_cast<size_t>(contact.bodyA.index)];
         const Body& bodyB = bodies[static_cast<size_t>(contact.bodyB.index)];
@@ -158,6 +160,49 @@ void ContactSolver::SolvePosition(std::vector<Body>& bodies, std::vector<Contact
             constraint.targetVelocity = betaOverDt * penetrationExcess;
 
             constraints.push_back(constraint);
+        }
+    };
+
+    if (UsesIslandPartition()) {
+        // Grouped order: island by island, island contacts ascending. Sleeping
+        // islands are skipped entirely - their pseudo velocities stay zero and the
+        // integration pass below leaves their transforms bit-identical. Islands are
+        // independent components, so this permutation of the constraints cannot
+        // change any float result versus the flat order.
+        const std::vector<std::vector<int32_t>>& islands = *m_islandBodyIndices;
+        const std::vector<std::vector<int32_t>>& islandContacts = *m_islandContactIndices;
+        for (size_t islandIndex = 0; islandIndex < islands.size(); ++islandIndex) {
+            bool islandAsleep = true;
+            for (const int32_t bodyIndex : islands[islandIndex]) {
+                if (bodyIndex >= 0 && static_cast<size_t>(bodyIndex) < bodies.size() &&
+                    bodies[static_cast<size_t>(bodyIndex)].isAwake) {
+                    islandAsleep = false;
+                    break;
+                }
+            }
+            if (islandAsleep) {
+                continue;
+            }
+            for (const int32_t contactIndex : islandContacts[islandIndex]) {
+                buildContact(static_cast<size_t>(contactIndex));
+            }
+        }
+    } else {
+        // Flat order, skipping contacts whose two bodies are both asleep so the
+        // position layer cannot push a sleeping body. Static bodies are born asleep,
+        // so the predicate must exclude static-static pairs: those are illegal input
+        // that has to reach the effective-mass assert (Week 5 contract), exactly like
+        // the velocity layer's skip in Prepare.
+        for (size_t contactIndex = 0; contactIndex < contacts.size(); ++contactIndex) {
+            const Contact& contact = contacts[contactIndex];
+            const Body& bodyA = bodies[static_cast<size_t>(contact.bodyA.index)];
+            const Body& bodyB = bodies[static_cast<size_t>(contact.bodyB.index)];
+            const bool bothAsleep = !bodyA.isAwake && !bodyB.isAwake;
+            const bool staticStatic = bodyA.type == BodyType::Static && bodyB.type == BodyType::Static;
+            if (bothAsleep && !staticStatic) {
+                continue;
+            }
+            buildContact(contactIndex);
         }
     }
 
