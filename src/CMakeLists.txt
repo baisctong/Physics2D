@@ -21,6 +21,8 @@ add_library(physics2d_core STATIC
     Collision/Clipping.cpp
     Collision/SAT.cpp
     Collision/Analytic.cpp
+    Collision/BroadPhaseBruteForce.cpp
+    Collision/BroadPhaseSAP.cpp
     Solver/ContactSolver.cpp
     Solver/ContactSolverPosition.cpp
 )

@@ -46,6 +46,10 @@ void Body::Initialize(const BodyDef& def) {
     sleepTime = 0.0f;
     islandId = -1;
     aabb = AABB{};
+    // Week 6: broad-phase proxy ids are World-owned bookkeeping, but resetting
+    // here keeps "Initialize == fresh body" true and makes a direct Body user
+    // unable to hand a stale id to the broad phase through World's mapping.
+    proxyId = -1;
 
     // ---- mass properties -------------------------------------------------
     switch (type) {

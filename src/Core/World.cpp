@@ -1,16 +1,18 @@
 // p2::World — body/shape ownership and the fixed simulation pipeline
-// (Section 4.6). Week 5 completes the solver wiring: UpdateContacts (phase 3)
+// (Section 4.6). Week 5 completed the solver wiring: UpdateContacts (phase 3)
 // produces the manifolds and inherits the per-point accumulated impulses,
 // PrepareConstraints caches the normal/tangent effective masses plus the
 // restitution/Baumgarte bias, WarmStart (phase 5) applies the inherited impulses,
 // SolveVelocityConstraints (phase 6) runs normal + friction iterations, and
 // SolvePositionConstraints (phase 8) runs the split-impulse pseudo-velocity
 // layer. The Week 2 temporary position push-out is gone.
-// See World.h for the frozen pipeline and API contracts.
 //
-// Scale note: pair enumeration is O(N^2) with an AABB pre-filter on purpose.
-// Week 6 replaces only the enumeration with IBroadPhase; the contact data
-// contract and the narrow-phase dispatch below stay exactly the same.
+// Week 6 replaced the contact-pair source: UpdateBroadPhase (phase 2) keeps the
+// installed IBroadPhase's proxies in sync with the bodies, collects the candidate
+// pairs and canonicalises them to the W2-W5 (i<j, sorted, deduped) order, which is
+// what keeps the physics bit-identical when the broad phase is switched. The
+// O(N^2) enumeration is kept only as the fallback for a World with no broad phase.
+// See World.h for the frozen pipeline and API contracts.
 
 #include "physics2d/Core/World.h"
 
@@ -151,6 +153,9 @@ BodyHandle World::CreateBody(const BodyDef& def) {
     // A body without a collider is a point; this keeps the contact pair filter
     // well-defined until AttachShape replaces it with the real bounds.
     body.aabb = AABB{body.xf.p, body.xf.p};
+    // Fresh slot: no broad-phase proxy yet. UpdateBroadPhase inserts one as soon
+    // as the body has a shape (reused slots are reset here, not by the old body).
+    body.proxyId = -1;
     return body.handle;
 }
 
@@ -163,6 +168,16 @@ void World::DestroyBody(BodyHandle handle) {
     }
 
     Body& body = m_bodies[static_cast<std::size_t>(handle.index)];
+    // Week 6: give the broad-phase proxy back before the slot is released, so a
+    // recycled slot can never inherit a stale proxy id (the proxy -> body mapping
+    // is reset too).
+    if (m_broadPhase != nullptr && body.proxyId >= 0) {
+        m_broadPhase->RemoveProxy(body.proxyId);
+        if (static_cast<std::size_t>(body.proxyId) < m_proxyToBody.size()) {
+            m_proxyToBody[static_cast<std::size_t>(body.proxyId)] = -1;
+        }
+        body.proxyId = -1;
+    }
     // The body owns its shape slot: release it so the shape pool does not leak.
     if (IsValidShape(body.shape)) {
         m_shapeIds.Release(body.shape.index);
@@ -564,23 +579,51 @@ void World::Step(float dt, int32_t velocityIterations, int32_t positionIteration
     // Section 4.6 pipeline: the ORDER is normative. When filling the reserved
     // phases in later weeks, do not move a call - only replace its body.
     IntegrateForces(dt);          //  1. force/gravity -> velocity            [done]
-    UpdateBroadPhase(dt);         //  2. broad phase update                   [reserved Week 6]
-    UpdateContacts();             //  3. narrow phase / contact generation     [done W2, O(N^2)]
+    UpdateBroadPhase(dt);         //  2. broad phase / candidate pairs        [done W6]
+    UpdateContacts();             //  3. narrow phase / contact generation     [done W2; W6 pair source]
     BuildIslands();               //  4. island construction                  [reserved Week 7]
     PrepareConstraints(dt);       //     solver cache + warm-start seeds       [done W5]
     WarmStart();                  //  5. warm start                           [done W5]
     SolveVelocityConstraints();   //  6. sequential impulses (normal+friction)[done W5]
     IntegratePositions(dt);       //  7. velocity -> position (semi-implicit) [done]
     SolvePositionConstraints(dt); //  8. split-impulse position layer         [done W5]
-    Synchronize();                //  9. transform/AABB synchronisation        [done W2]
+    Synchronize();                //  9. transform + fat AABB                 [done W2/W6]
     UpdateSleep(dt);              // 10. sleep evaluation                     [reserved Week 7]
     Validate();                   // 11. debug validation (NaN/Inf scan)      [done]
 }
 
 void World::SetBroadPhase(std::unique_ptr<IBroadPhase> broadPhase) {
-    // World owns the object; nullptr explicitly disables broad-phase work. Week
-    // 2 always uses the O(N^2) enumeration in UpdateContacts.
+    // World owns the object; nullptr explicitly disables broad-phase work and
+    // falls back to the O(N^2) enumeration in UpdateContacts.
+    //
+    // Switching implementations at runtime must not leak proxies into the old
+    // implementation and must not leave stale ids on the bodies: release every
+    // proxy first, then let the next UpdateBroadPhase insert fresh ones into the
+    // new implementation.
+    ReleaseBroadPhaseProxies();
     m_broadPhase = std::move(broadPhase);
+    m_broadPhasePairs.clear();
+    m_proxyToBody.clear();
+}
+
+void World::ReleaseBroadPhaseProxies() {
+    if (m_broadPhase == nullptr) {
+        return;
+    }
+    const int32_t bodyCount = static_cast<int32_t>(m_bodies.size());
+    for (int32_t index = 0; index < bodyCount; ++index) {
+        if (!m_bodyIds.IsValid(index)) {
+            continue;
+        }
+        Body& body = m_bodies[static_cast<std::size_t>(index)];
+        if (body.proxyId >= 0) {
+            m_broadPhase->RemoveProxy(body.proxyId);
+            if (static_cast<std::size_t>(body.proxyId) < m_proxyToBody.size()) {
+                m_proxyToBody[static_cast<std::size_t>(body.proxyId)] = -1;
+            }
+            body.proxyId = -1;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -625,14 +668,17 @@ void World::Clear() {
     if (m_contactSolver != nullptr) {
         m_contactSolver->Clear();
     }
+    // Week 6: release the broad-phase proxies before the body array disappears -
+    // the broad phase owns proxy storage that outlives a World::Clear otherwise.
+    ReleaseBroadPhaseProxies();
+    m_broadPhasePairs.clear();
+    m_proxyToBody.clear();
     m_contacts.clear();
     m_previousContacts.clear();
     m_shapes.clear();
     m_shapeIds.Clear();
     m_bodies.clear();
     m_bodyIds.Clear();
-    // RESERVED (Week 6): the broad phase will need its proxies cleared here once
-    // IBroadPhase grows a reset entry point; until then it holds no state.
 }
 
 void World::CheckSane() const {
@@ -730,10 +776,95 @@ void World::IntegrateForces(float dt) {
 }
 
 void World::UpdateBroadPhase(float dt) {
-    // RESERVED (Week 6): with a broad phase installed, update/insert the fat
-    // AABB of every live body and enumerate candidate pairs into UpdateContacts.
-    // Week 2 uses the O(N^2) enumeration below instead.
+    // Phase 2 (Week 6). Two responsibilities:
+    //  1. keep the installed broad phase's proxies in sync with the bodies. The
+    //     AABBs were refreshed by Synchronize at the end of the PREVIOUS step,
+    //     which is the standard one-step lag of a discrete broad phase (a body
+    //     that moved this step is exactly what the next step needs to see). The
+    //     kAabbMargin added by Synchronize covers the sub-step slack.
+    //  2. collect the candidate pairs and canonicalise them to the W2-W5 order
+    //     (i < j, sorted, deduped). Without that sort, switching broad phases
+    //     would reorder the contact list and therefore the Gauss-Seidel solve
+    //     order, changing the last bits of every body state. That is why the
+    //     sort/unique at the end is not an optimisation - it is the contract.
+    //
+    // dt is not consumed: proxies are updated every step, so no velocity-based
+    // AABB extrapolation is needed (the margin absorbs the slack). The parameter
+    // stays in the signature because the pipeline calls every phase uniformly.
     (void)dt;
+
+    if (m_broadPhase == nullptr) {
+        // No broad phase installed: UpdateContacts falls back to the O(N^2)
+        // enumeration, so there is nothing to collect here.
+        m_broadPhasePairs.clear();
+        return;
+    }
+
+    const int32_t bodyCount = static_cast<int32_t>(m_bodies.size());
+    for (int32_t index = 0; index < bodyCount; ++index) {
+        if (!m_bodyIds.IsValid(index)) {
+            continue;
+        }
+        Body& body = m_bodies[static_cast<std::size_t>(index)];
+
+        // Only bodies with a collider participate: without a shape nothing can
+        // generate a manifold. AttachShape/DestroyShape change validity at
+        // runtime, so both the insert and the remove branch are live.
+        if (!IsValidShape(body.shape)) {
+            if (body.proxyId >= 0) {
+                m_broadPhase->RemoveProxy(body.proxyId);
+                if (static_cast<std::size_t>(body.proxyId) < m_proxyToBody.size()) {
+                    m_proxyToBody[static_cast<std::size_t>(body.proxyId)] = -1;
+                }
+                body.proxyId = -1;
+            }
+            continue;
+        }
+
+        if (body.proxyId < 0) {
+            const int32_t proxyId = m_broadPhase->AddProxy(body.aabb);
+            body.proxyId = proxyId;
+            if (static_cast<std::size_t>(proxyId) >= m_proxyToBody.size()) {
+                m_proxyToBody.resize(static_cast<std::size_t>(proxyId) + 1, -1);
+            }
+            m_proxyToBody[static_cast<std::size_t>(proxyId)] = index;
+        } else {
+            m_broadPhase->UpdateAABB(body.proxyId, body.aabb);
+            // Keep the reverse map authoritative: even though an implementation
+            // never renames a proxy, the mapping is what the callback below
+            // trusts, so refresh it in both branches.
+            if (static_cast<std::size_t>(body.proxyId) >= m_proxyToBody.size()) {
+                m_proxyToBody.resize(static_cast<std::size_t>(body.proxyId) + 1, -1);
+            }
+            m_proxyToBody[static_cast<std::size_t>(body.proxyId)] = index;
+        }
+    }
+
+    m_broadPhasePairs.clear();
+    const std::size_t proxyCount = m_proxyToBody.size();
+    m_broadPhase->QueryPairs([this, proxyCount](int32_t proxyIdA, int32_t proxyIdB) {
+        // The interface does not guarantee ordering; the World only relies on its
+        // own canonicalisation below. Proxy ids that were released this step map
+        // to -1 and are skipped defensively.
+        if (proxyIdA < 0 || proxyIdB < 0 || static_cast<std::size_t>(proxyIdA) >= proxyCount ||
+            static_cast<std::size_t>(proxyIdB) >= proxyCount) {
+            return;
+        }
+        int32_t indexA = m_proxyToBody[static_cast<std::size_t>(proxyIdA)];
+        int32_t indexB = m_proxyToBody[static_cast<std::size_t>(proxyIdB)];
+        if (indexA < 0 || indexB < 0 || indexA == indexB) {
+            return;
+        }
+        if (indexA > indexB) {
+            std::swap(indexA, indexB);
+        }
+        m_broadPhasePairs.emplace_back(indexA, indexB);
+    });
+
+    // Canonical order == the fixed i<j enumeration order of Weeks 2-5.
+    std::sort(m_broadPhasePairs.begin(), m_broadPhasePairs.end());
+    m_broadPhasePairs.erase(std::unique(m_broadPhasePairs.begin(), m_broadPhasePairs.end()),
+                            m_broadPhasePairs.end());
 }
 
 void World::UpdateContacts() {
@@ -742,112 +873,132 @@ void World::UpdateContacts() {
     m_previousContacts = std::move(m_contacts);
     m_contacts.clear();
 
+    if (m_broadPhase != nullptr) {
+        // Week 6: candidate pairs were already enumerated by the installed broad
+        // phase. UpdateBroadPhase canonicalised them to (i<j, sorted, deduped),
+        // which is exactly the W2-W5 enumeration order - that is what keeps the
+        // physics bit-identical when the broad phase changes.
+        for (const std::pair<int32_t, int32_t>& pair : m_broadPhasePairs) {
+            CreateContactForPair(pair.first, pair.second);
+        }
+        return;
+    }
+
+    // Fallback (no broad phase installed): the Week 2 O(N^2) enumeration. It uses
+    // the same per-pair routine, so the two pair sources cannot drift apart.
     const int32_t bodyCount = static_cast<int32_t>(m_bodies.size());
     for (int32_t indexA = 0; indexA < bodyCount; ++indexA) {
         if (!m_bodyIds.IsValid(indexA)) {
             continue;
         }
-        Body& bodyA = m_bodies[static_cast<std::size_t>(indexA)];
-        if (!IsValidShape(bodyA.shape)) {
-            continue; // no collider -> cannot generate contacts
-        }
-
-        // Fixed i < j iteration: every pair is visited once and contact order is
-        // independent of insertion history (determinism, Section 7.4). A is
-        // always the lower handle index, so the narrow-phase normal convention
-        // maps directly onto Contact::bodyA/bodyB.
         for (int32_t indexB = indexA + 1; indexB < bodyCount; ++indexB) {
             if (!m_bodyIds.IsValid(indexB)) {
                 continue;
             }
-            Body& bodyB = m_bodies[static_cast<std::size_t>(indexB)];
-            if (!IsValidShape(bodyB.shape)) {
-                continue;
-            }
-
-            // Infinite-mass pairs never generate contacts: nothing could be
-            // pushed apart, and the response is mass-weighted.
-            if (!bodyA.IsDynamic() && !bodyB.IsDynamic()) {
-                continue;
-            }
-
-            // Broad-phase stand-in: cheap AABB rejection (Week 6 replaces the
-            // enumeration, not this filter). Touching counts as overlap.
-            if (!Overlaps(bodyA.aabb, bodyB.aabb)) {
-                continue;
-            }
-
-            const Shape& shapeA = m_shapes[static_cast<std::size_t>(bodyA.shape.index)];
-            const Shape& shapeB = m_shapes[static_cast<std::size_t>(bodyB.shape.index)];
-
-            // Week 4 narrow phase: analytic circle paths + polygon SAT/clipping.
-            // Plane-plane can never touch (two half-spaces can always be pushed
-            // apart trivially), so it is not a contact. The dispatch is by shape
-            // type of the lower-index body first, so the A/B normal convention
-            // stays explicit at every call site.
-            Manifold manifold;
-            SATCache satCache; // only meaningful for polygon-polygon contacts
-            const bool polygonPair = shapeA.type == ShapeType::Polygon && shapeB.type == ShapeType::Polygon;
-            if (shapeA.type == ShapeType::Circle) {
-                if (shapeB.type == ShapeType::Circle) {
-                    manifold = CollideCircles(shapeA.circle, bodyA.xf, shapeB.circle, bodyB.xf);
-                } else if (shapeB.type == ShapeType::Plane) {
-                    manifold = CollideCircleAndPlane(shapeA.circle, bodyA.xf, shapeB.plane, bodyB.xf);
-                } else {
-                    manifold = CollideCircleAndPolygon(shapeA.circle, bodyA.xf, shapeB.polygon, bodyB.xf);
-                }
-            } else if (shapeA.type == ShapeType::Plane) {
-                if (shapeB.type == ShapeType::Circle) {
-                    manifold = CollidePlaneAndCircle(shapeA.plane, bodyA.xf, shapeB.circle, bodyB.xf);
-                } else if (shapeB.type == ShapeType::Plane) {
-                    continue;
-                } else {
-                    manifold = CollidePlaneAndPolygon(shapeA.plane, bodyA.xf, shapeB.polygon, bodyB.xf);
-                }
-            } else { // A is a Polygon
-                if (shapeB.type == ShapeType::Circle) {
-                    manifold = CollidePolygonAndCircle(shapeA.polygon, bodyA.xf, shapeB.circle, bodyB.xf);
-                } else if (shapeB.type == ShapeType::Plane) {
-                    manifold = CollidePolygonAndPlane(shapeA.polygon, bodyA.xf, shapeB.plane, bodyB.xf);
-                } else {
-                    // SAT hysteresis (Week 4 D6): feed the previous frame's
-                    // reference face when the feature is enabled. The cache only
-                    // breaks near-ties; it never changes the physical result, so
-                    // enabling/disabling it must stay equivalent.
-                    SATCache* cacheHint = nullptr;
-                    if (m_solverSettings.useSatCache) {
-                        if (const Contact* previous =
-                                FindPreviousContact(m_previousContacts, bodyA.handle, bodyB.handle)) {
-                            satCache = previous->satCache;
-                        }
-                        cacheHint = &satCache;
-                    }
-                    manifold = CollidePolygons(shapeA.polygon, bodyA.xf, shapeB.polygon, bodyB.xf, cacheHint);
-                }
-            }
-            if (!manifold.IsTouching()) {
-                continue;
-            }
-
-            Contact contact;
-            contact.bodyA = bodyA.handle;
-            contact.bodyB = bodyB.handle;
-            contact.manifold = manifold;
-            // Material combination contract (Contact.h): geometric mean friction,
-            // larger restitution wins (the bouncier surface dominates).
-            contact.friction = std::sqrt(bodyA.friction * bodyB.friction);
-            contact.restitution =
-                (bodyA.restitution > bodyB.restitution) ? bodyA.restitution : bodyB.restitution;
-            contact.isPersistent = MatchAndInheritImpulses(contact, m_previousContacts);
-            if (polygonPair) {
-                // Persist the reference-face choice for the next frame (the cache
-                // is invalid when caching is disabled, which is exactly the
-                // nullptr-hint path above).
-                contact.satCache = satCache;
-            }
-            m_contacts.push_back(contact);
+            CreateContactForPair(indexA, indexB);
         }
     }
+}
+
+void World::CreateContactForPair(int32_t indexA, int32_t indexB) {
+    // Single implementation for every candidate pair (broad phase or fallback).
+    // `indexA < indexB` is the A/B convention of the whole narrow phase: A is the
+    // lower slot index, so Contact::bodyA == the body that owns the "from" side
+    // of the contact normal.
+    assert(indexA >= 0 && indexB >= 0 && indexA < indexB && "World::CreateContactForPair: bad pair");
+    assert(static_cast<std::size_t>(indexB) < m_bodies.size() &&
+           "World::CreateContactForPair: body index out of range");
+    if (!m_bodyIds.IsValid(indexA) || !m_bodyIds.IsValid(indexB)) {
+        return; // defensive: a pair must never reference a dead slot
+    }
+
+    Body& bodyA = m_bodies[static_cast<std::size_t>(indexA)];
+    Body& bodyB = m_bodies[static_cast<std::size_t>(indexB)];
+    if (!IsValidShape(bodyA.shape) || !IsValidShape(bodyB.shape)) {
+        return; // no collider -> cannot generate contacts
+    }
+
+    // Infinite-mass pairs never generate contacts: nothing could be pushed apart,
+    // and the response is mass-weighted.
+    if (!bodyA.IsDynamic() && !bodyB.IsDynamic()) {
+        return;
+    }
+
+    // Broad-phase stand-in: cheap AABB rejection. The installed broad phase has
+    // already rejected non-overlapping pairs, so this is a no-op there; the
+    // fallback path needs it. Touching counts as overlap.
+    if (!Overlaps(bodyA.aabb, bodyB.aabb)) {
+        return;
+    }
+
+    const Shape& shapeA = m_shapes[static_cast<std::size_t>(bodyA.shape.index)];
+    const Shape& shapeB = m_shapes[static_cast<std::size_t>(bodyB.shape.index)];
+
+    // Week 4 narrow phase: analytic circle paths + polygon SAT/clipping.
+    // Plane-plane can never touch (two half-spaces can always be pushed
+    // apart trivially), so it is not a contact. The dispatch is by shape
+    // type of the lower-index body first, so the A/B normal convention
+    // stays explicit at every call site.
+    Manifold manifold;
+    SATCache satCache; // only meaningful for polygon-polygon contacts
+    const bool polygonPair = shapeA.type == ShapeType::Polygon && shapeB.type == ShapeType::Polygon;
+    if (shapeA.type == ShapeType::Circle) {
+        if (shapeB.type == ShapeType::Circle) {
+            manifold = CollideCircles(shapeA.circle, bodyA.xf, shapeB.circle, bodyB.xf);
+        } else if (shapeB.type == ShapeType::Plane) {
+            manifold = CollideCircleAndPlane(shapeA.circle, bodyA.xf, shapeB.plane, bodyB.xf);
+        } else {
+            manifold = CollideCircleAndPolygon(shapeA.circle, bodyA.xf, shapeB.polygon, bodyB.xf);
+        }
+    } else if (shapeA.type == ShapeType::Plane) {
+        if (shapeB.type == ShapeType::Circle) {
+            manifold = CollidePlaneAndCircle(shapeA.plane, bodyA.xf, shapeB.circle, bodyB.xf);
+        } else if (shapeB.type == ShapeType::Plane) {
+            return;
+        } else {
+            manifold = CollidePlaneAndPolygon(shapeA.plane, bodyA.xf, shapeB.polygon, bodyB.xf);
+        }
+    } else { // A is a Polygon
+        if (shapeB.type == ShapeType::Circle) {
+            manifold = CollidePolygonAndCircle(shapeA.polygon, bodyA.xf, shapeB.circle, bodyB.xf);
+        } else if (shapeB.type == ShapeType::Plane) {
+            manifold = CollidePolygonAndPlane(shapeA.polygon, bodyA.xf, shapeB.plane, bodyB.xf);
+        } else {
+            // SAT hysteresis (Week 4 D6): feed the previous frame's
+            // reference face when the feature is enabled. The cache only
+            // breaks near-ties; it never changes the physical result, so
+            // enabling/disabling it must stay equivalent.
+            SATCache* cacheHint = nullptr;
+            if (m_solverSettings.useSatCache) {
+                if (const Contact* previous =
+                        FindPreviousContact(m_previousContacts, bodyA.handle, bodyB.handle)) {
+                    satCache = previous->satCache;
+                }
+                cacheHint = &satCache;
+            }
+            manifold = CollidePolygons(shapeA.polygon, bodyA.xf, shapeB.polygon, bodyB.xf, cacheHint);
+        }
+    }
+    if (!manifold.IsTouching()) {
+        return;
+    }
+
+    Contact contact;
+    contact.bodyA = bodyA.handle;
+    contact.bodyB = bodyB.handle;
+    contact.manifold = manifold;
+    // Material combination contract (Contact.h): geometric mean friction,
+    // larger restitution wins (the bouncier surface dominates).
+    contact.friction = std::sqrt(bodyA.friction * bodyB.friction);
+    contact.restitution = (bodyA.restitution > bodyB.restitution) ? bodyA.restitution : bodyB.restitution;
+    contact.isPersistent = MatchAndInheritImpulses(contact, m_previousContacts);
+    if (polygonPair) {
+        // Persist the reference-face choice for the next frame (the cache
+        // is invalid when caching is disabled, which is exactly the
+        // nullptr-hint path above).
+        contact.satCache = satCache;
+    }
+    m_contacts.push_back(contact);
 }
 
 void World::BuildIslands() {
@@ -939,9 +1090,12 @@ void World::SolvePositionConstraints(float dt) {
 }
 
 void World::Synchronize() {
-    // Refresh each body's cached AABB from its shape and current transform. This
-    // is what UpdateContacts filters on during the NEXT step (phase 3 runs before
-    // this phase, so the bounds are always from the end of the previous step).
+    // Refresh each body's cached AABB from its shape and current transform, then
+    // grow it by kAabbMargin (Week 6: the broad phase sees a FAT AABB). This is
+    // what the next step's broad phase and the O(N^2) fallback filter consume
+    // (phase 2/3 run before this phase, so the bounds are always from the end of
+    // the previous step). The margin only widens the candidate set - the narrow
+    // phase still makes the exact decision - so contact generation is unchanged.
     const int32_t bodyCount = static_cast<int32_t>(m_bodies.size());
     for (int32_t index = 0; index < bodyCount; ++index) {
         if (!m_bodyIds.IsValid(index)) {
@@ -955,6 +1109,10 @@ void World::Synchronize() {
             // candidate filter well-defined (no false positives).
             body.aabb = AABB{body.xf.p, body.xf.p};
         }
+        // Planes already carry the kPlaneAabbExtent box from ComputeShapeAABB;
+        // Extend() is harmless there (1e6 + 0.1 is exactly representable) and
+        // keeps the single code path.
+        body.aabb.Extend(kAabbMargin);
     }
 }
 

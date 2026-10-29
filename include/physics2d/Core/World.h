@@ -12,15 +12,15 @@
 //   Phase                            Week   Method
 //   ------------------------------   ----   -------------------------------
 //   1. integrate forces -> velocity    1    IntegrateForces()      [done]
-//   2. broad phase update              6    UpdateBroadPhase()     [reserved]
-//   3. narrow phase / contacts         2    UpdateContacts()       [done W2]
+//   2. broad phase update              6    UpdateBroadPhase(dt)   [done W6]
+//   3. narrow phase / contacts         2/6  UpdateContacts()       [done W2; W6 pair source = broad phase]
 //   4. island construction             7    BuildIslands()         [reserved]
 //      solver preparation             3/5  PrepareConstraints()   [done W5: friction + warm-start seeds]
 //   5. warm start                      5    WarmStart()            [done W5]
 //   6. velocity iterations             3/5  SolveVelocityConstraints() [done W5: normal + friction]
 //   7. integrate velocity -> position   1   IntegratePositions()   [done]
 //   8. position iterations (split imp) 5    SolvePositionConstraints(dt) [done W5: pseudo-velocity layer]
-//   9. synchronise AABB/transform      2    Synchronize()          [done W2]
+//   9. synchronise AABB/transform      2/6  Synchronize()          [done W2; W6 adds the fat margin]
 //   10. sleep evaluation               7    UpdateSleep()          [reserved]
 //   11. debug validation               1    Validate()             [done]
 //
@@ -28,8 +28,11 @@
 // - Shape pool: one shape per body (Body::shape), created via Create*Shape and
 //   attached with AttachShape (which derives mass/inertia from the density).
 // - Contact list: World owns it (narrow-phase output), rebuilt every frame by
-//   UpdateContacts() with O(N^2) pair enumeration + AABB filter. Week 6 replaces
-//   only the enumeration with IBroadPhase; the Contact data contract stays.
+//   UpdateContacts(). Week 6: the candidate pairs come from the installed
+//   IBroadPhase (or from the O(N^2) fallback when none is installed) and are
+//   canonicalised to (i < j, sorted, deduped) so the contact list - and
+//   therefore the Gauss-Seidel solve order - is bit-identical to the pre-W6
+//   enumeration. Only the enumeration changed, never the Contact data contract.
 // - Persistence: per-point accumulated impulses are inherited across frames by
 //   ContactID::Key() in MatchAndInheritImpulses; the Week 5 solver consumes them
 //   for warm starting, so this mapping is now on the hot path (do not weaken it).
@@ -65,6 +68,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace p2 {
@@ -180,11 +184,19 @@ class World {
     [[nodiscard]] const SolverSettings& GetSolverSettings() const noexcept { return m_solverSettings; }
 
     // ------------------------------------------------------------------
-    // RESERVED: pluggable broad phase (Week 6).
-    // Passing nullptr disables broad-phase work; World owns the object.
+    // Pluggable broad phase (Week 6). Passing nullptr disables broad-phase work
+    // and falls back to the O(N^2) enumeration; World owns the object. Switching
+    // at runtime releases the old implementation's proxies and re-inserts the
+    // bodies into the new one on the next step.
     // ------------------------------------------------------------------
     void SetBroadPhase(std::unique_ptr<IBroadPhase> broadPhase);
     [[nodiscard]] IBroadPhase* GetBroadPhase() const noexcept { return m_broadPhase.get(); }
+
+    // Candidate pairs the installed broad phase produced for the current step
+    // (0 when no broad phase is installed). Status panel / tests only.
+    [[nodiscard]] int32_t GetBroadPhasePairCount() const noexcept {
+        return static_cast<int32_t>(m_broadPhasePairs.size());
+    }
 
     // ------------------------------------------------------------------
     // Contacts (Week 2): read-only view for tests, testbed panels and the
@@ -221,8 +233,8 @@ class World {
   private:
     // ---- Step phases (Section 4.6 order is normative) -------------------
     void IntegrateForces(float dt);
-    void UpdateBroadPhase(float dt); // reserved Week 6
-    void UpdateContacts();           // Week 2: O(N^2) + AABB filter + analytic narrow phase
+    void UpdateBroadPhase(float dt); // Week 6: proxy sync + canonical candidate pairs
+    void UpdateContacts();           // Week 2/6: narrow phase over the candidate pairs
     void BuildIslands();             // reserved Week 7
     void
     PrepareConstraints(float dt);    // Week 5: rA/rB, K_n/K_t, restitution + Baumgarte bias, warm-start seeds
@@ -230,9 +242,18 @@ class World {
     void SolveVelocityConstraints(); // Week 5: normal + friction sequential impulses
     void IntegratePositions(float dt);
     void SolvePositionConstraints(float dt); // Week 5: split-impulse pseudo-velocity position layer
-    void Synchronize();                      // Week 2: body AABBs from shapes
+    void Synchronize();                      // Week 2/6: tight AABB + fat margin
     void UpdateSleep(float dt);              // reserved Week 7
     void Validate() const;                   // debug-only NaN scan
+
+    // Week 6: narrow-phase dispatch for ONE candidate body pair (indexA < indexB).
+    // Shared by the broad-phase pair list and the O(N^2) fallback enumeration, so
+    // the two paths cannot drift apart.
+    void CreateContactForPair(int32_t indexA, int32_t indexB);
+
+    // Week 6: removes every proxy from the installed broad phase and clears the
+    // proxy <-> body bookkeeping (used by SetBroadPhase and Clear).
+    void ReleaseBroadPhaseProxies();
 
     // Returns the body for a valid handle, asserting on misuse (debug).
     [[nodiscard]] Body* GetBodyMutable(BodyHandle handle);
@@ -266,8 +287,16 @@ class World {
     int32_t m_activeVelocityIterations = kVelocityIterations;
     int32_t m_activePositionIterations = kPositionIterations;
 
-    // RESERVED (Week 6): broad phase implementation, may be null until then.
+    // Week 6 broad phase. `m_broadPhase` may be null (O(N^2) fallback path).
+    //  - m_broadPhasePairs: canonical candidate pairs for this step, as body slot
+    //    indices with pair.first < pair.second, sorted lexicographically so the
+    //    narrow-phase order reproduces the O(N^2) enumeration exactly (physics must
+    //    not change when the broad phase changes);
+    //  - m_proxyToBody: broad-phase proxy id -> body slot index (-1 = free). Body
+    //    owns the forward mapping in Body::proxyId.
     std::unique_ptr<IBroadPhase> m_broadPhase;
+    std::vector<std::pair<int32_t, int32_t>> m_broadPhasePairs;
+    std::vector<int32_t> m_proxyToBody;
 };
 
 } // namespace p2

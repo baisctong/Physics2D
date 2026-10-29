@@ -19,6 +19,7 @@
 #include "physics2d/Math/Transform.h"
 #include "physics2d/Math/Vec2.h"
 
+#include <cstdint>
 #include <string>
 
 namespace p2 {
@@ -72,7 +73,13 @@ struct Body {
     float sleepTime = 0.0f;
     int32_t islandId = -1; // reserved (Week 7)
 
-    AABB aabb; // reserved (Week 6): fat AABB for the broad phase
+    AABB aabb; // fat AABB (tight bounds + kAabbMargin), refreshed by World::Synchronize
+
+    // Week 6: broad-phase proxy id owned by the installed IBroadPhase, -1 when the
+    // body has no proxy. World creates/updates/releases it around
+    // UpdateBroadPhase/DestroyBody; the body itself never talks to the broad phase.
+    // Appended to the hot block - the Week 5 velocity-solver contract is unchanged.
+    int32_t proxyId = -1;
 
     // ---------------------------------------------------------------------
     // Operations

@@ -76,6 +76,18 @@ inline constexpr float kRestitutionVelocityThreshold = 1.0f;
 inline constexpr float kMaxTranslation = 2.0f;
 inline constexpr float kMaxRotation = 0.5f * kPi;
 
+// ---- broad phase (Week 6) ----------------------------------------------------
+
+// Fat AABB margin (m). World::Synchronize grows every body's tight AABB by this
+// before the broad phase sees it. Why: the broad phase is fed with bounds that
+// are one step old (phase 2 runs before the next Synchronize), and a proxy whose
+// bounds are exact would drop a pair in the frame a body moves a fraction of a
+// millimetre. 0.1 m is Box2D's b2_aabbExtension; at our 0.1-10 m scale it is
+// large enough to absorb one step of ordinary motion (<= kMaxTranslation is
+// handled per-frame because the proxy is updated every step) and small enough
+// that it does not flood the narrow phase with false positives.
+inline constexpr float kAabbMargin = 0.1f;
+
 // ---- solver iteration defaults ---------------------------------------------
 
 inline constexpr int32_t kVelocityIterations = 8;
