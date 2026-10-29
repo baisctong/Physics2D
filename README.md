@@ -61,12 +61,17 @@ Week 8 为文档与交付周）。详细计划见
 # 1) 一次性环境检查（VS2022 C++ 工作负载、CMake、Git、Ninja）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
 
-# 2) 配置 + 编译 + 跑单测
+# 2) 配置 + 编译 + 跑单测（期望：100% tests passed out of 354、0 warning）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset debug -RunTests
 
-# 3) 启动测试台（下拉框切换 6 个 demo；Broad phase 面板可实时切 Auto/None/BruteForce/SAP）
+# 3) 启动测试台（下拉框切换 8 个 demo；Broad phase 面板可实时切 Auto/None/BruteForce/SAP；
+#    Space 暂停 / '.' 单步 / 1-2-3 慢放 / R 回默认视野）
 .\build\debug\testbed\physics2d_testbed.exe
 ```
+
+**想手动验收 / 只跑某个测试 / 看 smoke、bench、回归数据？** 见
+[`docs/testing.md`](docs/testing.md)（30 秒版、单测过滤、交互测试台 10 分钟人工验收脚本、
+8 个 demo 期望值、宽相 A/B 校验、death tests、FAQ、验收清单）。
 
 Linux：
 
@@ -95,7 +100,7 @@ flowchart LR
 
 - **分层铁律**：`physics2d_core` 不 include 任何渲染/UI 头（Tracy 例外），CI 有 grep 守卫；
   `World` 只前向声明 `ContactSolver`，Core 公共头不会把 Solver 拖进编译单元。
-- 正式文档：[`docs/architecture.md`](docs/architecture.md)。
+- 正式文档：[`docs/architecture.md`](docs/architecture.md)；手动测试指南：[`docs/testing.md`](docs/testing.md)。
 
 ## 📁 目录
 

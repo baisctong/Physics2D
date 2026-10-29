@@ -15,14 +15,16 @@
 >
 > 原始设计文档（仓库外）：`E:\Big Fat Fish's Workstation\2D物理引擎项目\2D物理引擎项目完整工作流与DeepSeek提示词库.md`
 > 仓库路径：`E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D`
-> 当前 HEAD：tag `v0.7-island-sleep`（`git log -1` 查看具体 hash；本报告随该 tag 一起提交）
+> 当前 HEAD：tag `v0.7-island-sleep` **之后**的一个 docs 提交（新增 `docs/testing.md` 手动测试指南；
+> `git log -1` / `git describe --tags` 为准）。代码与测试状态对应 tag `v0.7-island-sleep`。
 
 ---
 
 ## 0. 新会话开场 3 步（别跳过）
 
 1. **读**本文件 §1-§4 + `AGENTS.md`，确认你理解固定 Step 顺序、符号约定、分层铁律、W5/W6/W7 不变量。
-2. **跑验证基线**（§2）。不先确认基线的会话，后面所有回归都不可信。
+2. **跑验证基线**（§2）。不先确认基线的会话，后面所有回归都不可信。具体命令与期望输出、单测过滤、
+   交互验收脚本见 [`docs/testing.md`](docs/testing.md)。
 3. **按 §5 Week 8 任务卡开工**，用 §9 的团队流程；结束时按 §10 清单收尾（commit + tag + 更新本文件状态）。
 
 ---
@@ -47,12 +49,17 @@
 | `docs/architecture.md` | 模块职责、数据布局、Step 流水线、宽相/岛屿/休眠数据流与算法 |
 | `docs/devlog.md` | 每周周报：完成/卡住/数据/下周/提醒（面试素材来源） |
 | `docs/dev-setup.md` | 环境、构建、测试台操作、**疑难杂症（含本机增量构建坑与自动防护）** |
+| `docs/testing.md` | **手动测试指南**：30 秒版 / 全量验收 / 单测过滤 / 交互测试台 10 分钟人工验收脚本 / smoke / bench / 回归 / death tests / FAQ / 验收清单（**人类用户与新手 AI 都先看这个**） |
 | `README.md` | 对外展示（W1-7 特性、真实性能表、Roadmap、已知限制） |
 | `HANDOFF.md` | 本文件：换会话交接 |
 
 ---
 
 ## 2. 验证基线（开工前先跑，确认环境没变）
+
+> **想自己手动验收/玩一玩？** 完整的分层指南（30 秒版、单测过滤、交互测试台 10 分钟人工验收脚本、
+> smoke/bench/回归/death tests、FAQ、验收清单）在 [`docs/testing.md`](docs/testing.md)。
+> 下面是最短的官方基线，必须首先通过。
 
 > 本机只有 **Windows PowerShell 5.1（没有 `pwsh`）**，且首次 configure 会联网 FetchContent
 > 下载依赖（1-2 分钟）。命令必须在仓库根目录执行。
@@ -389,6 +396,9 @@ docs/  scripts/
 
 ## 10. 常用命令速查
 
+> 每个命令的期望输出、如何只跑一组测试、如何做交互式人工验收、bench/回归/death tests 的完整说明见
+> [`docs/testing.md`](docs/testing.md)。下面是最高频的几条。
+
 ```powershell
 cd "E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D"
 
@@ -436,8 +446,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/format.ps1 -Check
 
 > 你是 Physics2D 项目的接手开发者。请先读
 > `E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D\HANDOFF.md`、
-> 同目录 `AGENTS.md`、`docs/ROADMAP.md`、`docs/dev-interfaces.md`，
-> 再按 `HANDOFF.md` §2 跑验证基线（预期 354/354、15 skip、0 warning、八个 smoke、bench/回归数据可复现）。
+> 同目录 `AGENTS.md`、`docs/ROADMAP.md`、`docs/dev-interfaces.md`、`docs/testing.md`，
+> 再按 `HANDOFF.md` §2 跑验证基线（预期 354/354、15 skip、0 warning、八个 smoke、bench/回归数据可复现；
+> 具体命令与期望值在 `docs/testing.md` §2/§5/§6/§7）。
 > 确认基线后进入 Week 8（文档与交付周）：架构总图、`docs/math.md`、`docs/profiling.md`、README 完整版 + GIF、
 > 已知限制与边界测试、简历 bullet 与面试演练，最后打 tag `v1.0-release`。
 > 默认不改物理；可选优化（2×2 block solver、Tracy、渲染插值、BodySim 拆分）必须在文档完成后、以测量为前提。
