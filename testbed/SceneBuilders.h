@@ -41,14 +41,16 @@ inline constexpr float kSceneFriction = 0.3f;            // mirrors BodyDef::fri
 inline constexpr float kSceneMinRandomHalfExtent = 0.1f; // 0.2 m: smallest random box
 inline constexpr float kSceneMaxRandomSpin = 3.0f;       // rad/s, random initial spin
 
-// One dynamic axis-aligned box body centred at `position`. Returns an invalid handle
-// if the World rejects the body/shape (the builders then skip it and keep going; a
-// partial scene is better than a silent crash for a debugging tool).
+// One dynamic box body with independent half extents (Week 7: dominoes are thin and
+// tall, so they cannot use the square overload). Returns an invalid handle if the World
+// rejects the body/shape (the builders then skip it and keep going; a partial scene is
+// better than a silent crash for a debugging tool).
 [[nodiscard]] inline BodyHandle CreateBoxBody(World& world, Vec2 position, float angleRadians,
-                                              float halfExtent, const std::string& debugName) {
-    if (!(halfExtent > 0.0f)) {
-        std::fprintf(stderr, "[SceneBuilders] invalid box half extent %.4f for '%s'\n",
-                     static_cast<double>(halfExtent), debugName.c_str());
+                                              Vec2 halfExtents, const std::string& debugName) {
+    if (!(halfExtents.x > 0.0f) || !(halfExtents.y > 0.0f)) {
+        std::fprintf(stderr, "[SceneBuilders] invalid box half extents (%.4f, %.4f) for '%s'\n",
+                     static_cast<double>(halfExtents.x), static_cast<double>(halfExtents.y),
+                     debugName.c_str());
         return BodyHandle{};
     }
 
@@ -66,7 +68,7 @@ inline constexpr float kSceneMaxRandomSpin = 3.0f;       // rad/s, random initia
         std::fprintf(stderr, "[SceneBuilders] World::CreateBody rejected '%s'\n", debugName.c_str());
         return BodyHandle{};
     }
-    const ShapeHandle boxShape = world.CreateBoxShape(halfExtent, halfExtent);
+    const ShapeHandle boxShape = world.CreateBoxShape(halfExtents.x, halfExtents.y);
     if (!world.IsValidShape(boxShape) || !world.AttachShape(handle, boxShape)) {
         std::fprintf(stderr, "[SceneBuilders] failed to create/attach the box shape for '%s'\n",
                      debugName.c_str());
@@ -74,6 +76,12 @@ inline constexpr float kSceneMaxRandomSpin = 3.0f;       // rad/s, random initia
         return BodyHandle{};
     }
     return handle;
+}
+
+// Square-box convenience overload.
+[[nodiscard]] inline BodyHandle CreateBoxBody(World& world, Vec2 position, float angleRadians,
+                                              float halfExtent, const std::string& debugName) {
+    return CreateBoxBody(world, position, angleRadians, Vec2{halfExtent, halfExtent}, debugName);
 }
 
 // Infinite static ground plane through y = `groundY` (the half-space below it is
@@ -245,6 +253,69 @@ inline constexpr float kSceneMaxRandomSpin = 3.0f;       // rad/s, random initia
         }
         world.SetAngularVelocity(handle, spinDistribution(rng));
         bodies.push_back(handle);
+    }
+    return bodies;
+}
+
+// A row of `count` thin upright dominoes standing on the ground (Week 7 Dominoes
+// scene). `halfExtents` = (thickness/2, height/2); the boxes are centred at
+// y = groundY + halfExtents.y and spaced `spacing` apart along x, so the initial state
+// has no box-box contacts (the chain only couples once the first one falls). Index 0 is
+// the domino the scene pushes - the wave propagates towards increasing x.
+[[nodiscard]] inline std::vector<BodyHandle> CreateDominoChain(World& world, int32_t count, float spacing,
+                                                               Vec2 halfExtents, float groundY = 0.0f) {
+    std::vector<BodyHandle> bodies;
+    const float minimumSpacing = 2.0f * halfExtents.x; // never start interpenetrated
+    if (count <= 0 || !(halfExtents.x > 0.0f) || !(halfExtents.y > 0.0f) || !(spacing > minimumSpacing)) {
+        std::fprintf(stderr,
+                     "[SceneBuilders] CreateDominoChain: invalid count/spacing/half extents (%d, %.3f, "
+                     "%.3f, %.3f)\n",
+                     count, static_cast<double>(spacing), static_cast<double>(halfExtents.x),
+                     static_cast<double>(halfExtents.y));
+        return bodies;
+    }
+    bodies.reserve(static_cast<std::size_t>(count));
+    const float centerY = groundY + halfExtents.y;
+    const float rowOffset = static_cast<float>(count - 1) * 0.5f;
+    for (int32_t index = 0; index < count; ++index) {
+        const Vec2 position{(static_cast<float>(index) - rowOffset) * spacing, centerY};
+        bodies.push_back(
+            CreateBoxBody(world, position, 0.0f, halfExtents, "domino_" + std::to_string(index)));
+    }
+    return bodies;
+}
+
+// A rectangular grid of upright boxes (Week 7 IslandSleep500 scene): `rows` columns
+// along x spaced `horizontalPitch`, each holding `columns` boxes stacked with
+// `verticalPitch` (0 = default = exactly 2*boxHalfExtent, i.e. an exactly stacked
+// tower). Total = rows*columns. Distinct columns are separated horizontally, so with
+// horizontalPitch > 2*boxHalfExtent each column is its own island once the island
+// builder runs - a scene that shows both the island partition and whole-island sleep.
+[[nodiscard]] inline std::vector<BodyHandle> CreateBoxGrid(World& world, int32_t rows, int32_t columns,
+                                                           float boxHalfExtent, float horizontalPitch,
+                                                           float verticalPitch = 0.0f, float groundY = 0.0f) {
+    std::vector<BodyHandle> bodies;
+    const float resolvedVerticalPitch = verticalPitch > 0.0f ? verticalPitch : 2.0f * boxHalfExtent;
+    if (rows <= 0 || columns <= 0 || !(boxHalfExtent > 0.0f) || !(horizontalPitch > 2.0f * boxHalfExtent) ||
+        !(resolvedVerticalPitch >= 2.0f * boxHalfExtent)) {
+        std::fprintf(
+            stderr, "[SceneBuilders] CreateBoxGrid: invalid rows/columns/pitches (%d, %d, %.3f, %.3f)\n",
+            rows, columns, static_cast<double>(horizontalPitch), static_cast<double>(resolvedVerticalPitch));
+        return bodies;
+    }
+    bodies.reserve(static_cast<std::size_t>(rows) * static_cast<std::size_t>(columns));
+    const float rowOffset = static_cast<float>(rows - 1) * 0.5f;
+    for (int32_t rowIndex = 0; rowIndex < rows; ++rowIndex) {
+        const float centerX = (static_cast<float>(rowIndex) - rowOffset) * horizontalPitch;
+        for (int32_t columnIndex = 0; columnIndex < columns; ++columnIndex) {
+            // +2 mm stagger-free gap is not needed: verticalPitch >= box height means the
+            // initial state is exactly touching (zero penetration) like the W5 tower.
+            const Vec2 position{centerX, groundY + boxHalfExtent +
+                                             resolvedVerticalPitch * static_cast<float>(columnIndex)};
+            bodies.push_back(
+                CreateBoxBody(world, position, 0.0f, boxHalfExtent,
+                              "grid_box_" + std::to_string(rowIndex) + "_" + std::to_string(columnIndex)));
+        }
     }
     return bodies;
 }

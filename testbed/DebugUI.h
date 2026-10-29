@@ -22,8 +22,8 @@
 //     user click a pair to highlight it. main.cpp draws the highlighted contact
 //     point and normal in a distinct colour so a clicked row is visible in the
 //     scene;
-//   - Status: FPS / frame + Step timings, body/shape/awake counts, contact and
-//     contact-point counts, max penetration, island count (0 until Week 7),
+//   - Status: FPS / frame + Step timings, body/shape counts, islands / awake /
+//     sleeping (Week 7), contact and contact-point counts, max penetration,
 //     broad-phase name / proxy / candidate-pair counts and the active solver
 //     settings.
 //
@@ -138,6 +138,17 @@ class DebugUI {
                                     const FrameStats& stats, DisplayOptions& display);
 
     [[nodiscard]] bool IsPaused() const noexcept { return m_paused; }
+
+    // Week 7 keyboard shortcuts (main.cpp edge-detects the keys): Space calls
+    // TogglePaused, '.' single-steps while paused (main reads IsPaused), 1/2/3 select the
+    // playback speed. The UI buttons remain the discoverable path.
+    void TogglePaused() noexcept { m_paused = !m_paused; }
+    static constexpr int kPlaybackSpeedCount = 3; // 1x / 0.5x / 0.25x
+    void SetSpeedIndex(int index) noexcept {
+        if (index >= 0 && index < kPlaybackSpeedCount) {
+            m_speedIndex = index;
+        }
+    }
 
     // 1x / 0.5x / 0.25x, matching the design document's playback speeds.
     [[nodiscard]] float GetSpeedMultiplier() const noexcept;

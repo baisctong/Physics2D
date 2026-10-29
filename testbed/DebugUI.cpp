@@ -7,6 +7,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 
@@ -21,21 +22,25 @@ constexpr float kPanelGap = 12.0f;
 constexpr float kControlPanelWidth = 340.0f;
 constexpr float kControlPanelHeight = 420.0f;
 constexpr float kStatusPanelWidth = 300.0f;
-constexpr float kStatusPanelHeight = 310.0f;
+// Week 7 added the islands/awake/sleeping line and the sleeping flags line: the Status
+// window grew slightly and the Solver window below it shrank to keep both on screen.
+constexpr float kStatusPanelHeight = 330.0f;
 constexpr float kSolverPanelWidth = 340.0f;
-constexpr float kSolverPanelHeight = 440.0f;
+constexpr float kSolverPanelHeight = 430.0f;
 constexpr float kContactsPanelWidth = 440.0f;
-constexpr float kContactsPanelHeight = 330.0f;
+// Bottom-left window: the screen area under the Controls panel is ~344 px at 1280x800,
+// and Week 7's selected-contact detail (impulse bars) needs part of it - the table is
+// shorter now and the whole panel scrolls if the detail needs more room.
+constexpr float kContactsPanelHeight = 344.0f;
 // Height of the scrollable contact table inside its panel (leaves room for the
-// summary line above and the highlight hint below).
-constexpr float kContactsTableHeight = 226.0f;
+// summary line above and the highlight + impulse detail below).
+constexpr float kContactsTableHeight = 156.0f;
 
 // Playback speeds from the design document's panel spec. The multiplier scales how
 // much simulated time one rendered frame contributes, so physics stays on the same
 // fixed dt and only the accumulator feed changes (Section 4.3).
-constexpr int kSpeedCount = 3;
-constexpr float kSpeedMultipliers[kSpeedCount] = {1.0f, 0.5f, 0.25f};
-constexpr const char* kSpeedLabels[kSpeedCount] = {"1x", "0.5x", "0.25x"};
+constexpr float kSpeedMultipliers[DebugUI::kPlaybackSpeedCount] = {1.0f, 0.5f, 0.25f};
+constexpr const char* kSpeedLabels[DebugUI::kPlaybackSpeedCount] = {"1x", "0.5x", "0.25x"};
 
 // Solver slider ranges. Iterations start at 0 on purpose: "skip this phase" is a
 // legal experiment, and the upper bound of 40 is the point where more iterations
@@ -122,7 +127,7 @@ void DebugUI::ApplyBroadPhase(World& world) {
 }
 
 float DebugUI::GetSpeedMultiplier() const noexcept {
-    if (m_speedIndex < 0 || m_speedIndex >= kSpeedCount) {
+    if (m_speedIndex < 0 || m_speedIndex >= kPlaybackSpeedCount) {
         return 1.0f;
     }
     return kSpeedMultipliers[m_speedIndex];
@@ -154,7 +159,7 @@ void DebugUI::DrawControlPanel(World& world, Demo& currentDemo, const std::vecto
     ImGui::SetNextWindowSize(ImVec2(kControlPanelWidth, kControlPanelHeight), ImGuiCond_FirstUseEver);
     ImGui::Begin("Testbed Controls");
 
-    ImGui::TextUnformatted("Physics2D testbed - Week 5");
+    ImGui::TextUnformatted("Physics2D testbed - Week 7");
     ImGui::Separator();
 
     if (!demoNames.empty()) {
@@ -187,7 +192,7 @@ void DebugUI::DrawControlPanel(World& world, Demo& currentDemo, const std::vecto
 
     ImGui::Separator();
     ImGui::TextUnformatted("Speed");
-    for (int speedIndex = 0; speedIndex < kSpeedCount; ++speedIndex) {
+    for (int speedIndex = 0; speedIndex < kPlaybackSpeedCount; ++speedIndex) {
         if (speedIndex > 0) {
             ImGui::SameLine();
         }
@@ -201,7 +206,12 @@ void DebugUI::DrawControlPanel(World& world, Demo& currentDemo, const std::vecto
         actions.quitRequested = true;
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("Camera: middle-drag / wheel / R");
+    ImGui::TextDisabled("middle-drag pan / wheel zoom / R view");
+
+    ImGui::Separator();
+    // Week 7: playback shortcuts (handled by main.cpp; the buttons stay the discoverable
+    // path). Documented here so it is visible without the README.
+    ImGui::TextDisabled("Keys: Space play/pause | '.' single step | 1/2/3 speed");
 
     // Solver, material, gravity and display controls moved to the Solver Settings
     // panel in Week 5; this panel stays the scene/playback panel so the floating
@@ -340,6 +350,32 @@ void DebugUI::DrawSolverPanel(World& world, DisplayOptions& display, FrameAction
                            ImGuiSliderFlags_AlwaysClamp)) {
         settingsChanged = true;
     }
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Islands & sleeping (Week 7)");
+    // Both flags take effect on the next Step through World::SetSolverSettings; the
+    // physics must NOT change when islands are enabled (island groups are independent,
+    // so the grouped solve order is bit-identical to the flat Week 6 order) - they are
+    // exposed for the P13 A/B verification and for debugging.
+    if (ImGui::Checkbox("Use island solving", &settings.useIslandSolving)) {
+        settingsChanged = true;
+    }
+    if (ImGui::Checkbox("Enable sleeping", &settings.enableSleeping)) {
+        settingsChanged = true;
+    }
+    ImGui::Text("Islands: %d   Awake: %d   Sleeping: %d", world.GetIslandCount(), world.GetAwakeBodyCount(),
+                world.GetSleepingBodyCount());
+    if (ImGui::Button("Wake all bodies")) {
+        // Whole-island wake via the public World API: waking one member wakes its island
+        // (waking a single body would leave its sleeping neighbours frozen around it).
+        for (const Body& body : world.GetBodies()) {
+            if (!body.handle.IsValid() || !world.IsValid(body.handle) || body.type != BodyType::Dynamic) {
+                continue;
+            }
+            world.WakeBody(body.handle);
+        }
+    }
+    ImGui::TextDisabled("Atomic whole-island sleep; an external impulse wakes the island.");
 
     ImGui::Separator();
     ImGui::TextUnformatted("Gravity");
@@ -505,6 +541,59 @@ void DebugUI::DrawContactsPanel(World& world, DisplayOptions& display) {
     } else {
         ImGui::TextDisabled("Click a row to highlight its point + normal.");
     }
+
+    // Week 7 D7: full detail for the selected contact. main.cpp already draws its point
+    // (cyan ring) and a 1 m normal arrow in the scene; here the numbers and bars make the
+    // solver state readable: the normal impulse per manifold point and how much of the
+    // Coulomb friction cone the tangent impulse uses (|accT| / (mu * accN)).
+    const Contact* selectedContact = nullptr;
+    if (display.highlightedContactBodyA.IsValid()) {
+        for (const Contact& contact : contacts) {
+            if (contact.manifold.IsTouching() && contact.bodyA == display.highlightedContactBodyA &&
+                contact.bodyB == display.highlightedContactBodyB) {
+                selectedContact = &contact;
+                break;
+            }
+        }
+    }
+    if (selectedContact != nullptr) {
+        ImGui::Separator();
+        // Bar scale: the largest accumulated normal impulse among the current touching
+        // contacts, so the bars are comparable within the scene and need no magic constant.
+        float maxNormalImpulse = 0.0f;
+        for (const Contact& contact : contacts) {
+            if (!contact.manifold.IsTouching()) {
+                continue;
+            }
+            for (int32_t pointIndex = 0; pointIndex < contact.manifold.pointCount; ++pointIndex) {
+                maxNormalImpulse =
+                    std::max(maxNormalImpulse, contact.manifold.points[pointIndex].normalImpulse);
+            }
+        }
+        if (maxNormalImpulse <= 0.0f) {
+            maxNormalImpulse = 1.0f;
+        }
+
+        ImGui::Text("normal=(%.3f, %.3f)   mu=%.3f   depth=%.2f mm", selectedContact->manifold.normal.x,
+                    selectedContact->manifold.normal.y, selectedContact->friction,
+                    selectedContact->manifold.penetration * kMillimetersPerMeter);
+        for (int32_t pointIndex = 0; pointIndex < selectedContact->manifold.pointCount; ++pointIndex) {
+            const ContactPoint& point = selectedContact->manifold.points[pointIndex];
+            char barLabel[96];
+            std::snprintf(barLabel, sizeof(barLabel), "P%d normal %.3f N*s", pointIndex,
+                          static_cast<double>(point.normalImpulse));
+            ImGui::ProgressBar(point.normalImpulse / maxNormalImpulse, ImVec2(-1.0f, 0.0f), barLabel);
+
+            // Friction-cone usage: 0% = no tangential impulse, 100% = fully saturated
+            // (sliding). The solver clamps the accumulated tangent impulse to +/-mu*accN.
+            const float coneRadius = selectedContact->friction * point.normalImpulse;
+            const float coneUsage =
+                coneRadius > 1.0e-6f ? std::min(std::fabs(point.tangentImpulse) / coneRadius, 1.0f) : 0.0f;
+            std::snprintf(barLabel, sizeof(barLabel), "P%d tangent %.3f N*s (cone %.0f%%)", pointIndex,
+                          static_cast<double>(point.tangentImpulse), static_cast<double>(coneUsage * 100.0f));
+            ImGui::ProgressBar(coneUsage, ImVec2(-1.0f, 0.0f), barLabel);
+        }
+    }
     ImGui::End();
 }
 
@@ -524,9 +613,10 @@ void DebugUI::DrawStatusPanel(const World& world, const Demo& currentDemo, const
     ImGui::Separator();
     ImGui::Text("Scene: %s", currentDemo.Name());
     ImGui::Text("Bodies: %d   Shapes: %d", world.GetBodyCount(), world.GetShapeCount());
-    // Islands are a Week 7 feature: BuildIslands() is still an empty reserved phase,
-    // so the honest value is 0 and the label says so instead of pretending.
-    ImGui::Text("Awake: %d   Islands: %d (Week 7)", world.GetAwakeBodyCount(), world.GetIslandCount());
+    // Week 7: islands come from the partition built this Step; sleeping counts dynamic
+    // bodies only (static bodies are born "asleep" and would make the number meaningless).
+    ImGui::Text("Islands: %d   Awake: %d   Sleeping: %d", world.GetIslandCount(), world.GetAwakeBodyCount(),
+                world.GetSleepingBodyCount());
 
     // Contact statistics. Only touching manifolds count; a pair with pointCount == 0
     // is separated and is not part of the contact list anyway, but guarding keeps the
@@ -565,6 +655,10 @@ void DebugUI::DrawStatusPanel(const World& world, const Demo& currentDemo, const
     ImGui::Text("Solver: %d vel / %d pos it", settings.velocityIterations, settings.positionIterations);
     ImGui::Text("  warm %s %.2f   split %s", settings.useWarmStarting ? "on" : "off",
                 settings.warmStartFactor, settings.useSplitImpulse ? "on" : "off");
+    // Week 7: the sleeping/island flags live in SolverSettings too; mirror them here so a
+    // checkbox that never reached the World would be visible immediately.
+    ImGui::Text("  sleeping %s   island-solve %s", settings.enableSleeping ? "on" : "off",
+                settings.useIslandSolving ? "on" : "off");
     ImGui::Text("Fixed dt: %.5f s", kFixedTimeStep);
     ImGui::Text("Paused: %s   Speed: %.2fx", m_paused ? "yes" : "no", GetSpeedMultiplier());
 

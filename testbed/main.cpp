@@ -2,7 +2,9 @@
 // overlay in Week 2; selectable scenes in Weeks 3-4; Week 5 adds the Solver and
 // Contacts panels, the clickable contact highlight and the FrictionRamp scene; Week 6
 // adds the broad-phase switch/default, auto camera framing and the Pyramid200 /
-// StressBenchmark scenes).
+// StressBenchmark scenes; Week 7 adds the Dominoes / IslandSleep500 scenes, the
+// island+sleep counters and controls, keyboard playback shortcuts and the contact
+// impulse bars).
 //
 // Responsibilities (and nothing else):
 //   1. Create the GLFW window / OpenGL 3.3 core context and initialise Dear ImGui
@@ -31,11 +33,12 @@
 //
 // CLI:
 //   --demo NAME choose the initial scene (FallingBall | SphereStack | BoxStack |
-//               FrictionRamp | Pyramid200 | StressBenchmark, default FallingBall).
-//               Matching is case-insensitive and ignores spaces, underscores and
-//               hyphens, so "spherestack" and "Sphere Stack" both work. An unknown
-//               name prints the available list and exits with code 2 so smoke
-//               automation can distinguish a typo from a physics failure.
+//               FrictionRamp | Dominoes | IslandSleep500 | Pyramid200 |
+//               StressBenchmark, default FallingBall). Matching is case-insensitive
+//               and ignores spaces, underscores and hyphens, so "spherestack" and
+//               "Sphere Stack" both work. An unknown name prints the available list
+//               and exits with code 2 so smoke automation can distinguish a typo
+//               from a physics failure.
 //   --broadphase NAME  broad phase: None | BruteForce (bf) | SAP (default SAP). Same
 //               loose name matching. Unknown values are a usage error (exit 1).
 //   --smoke N   render N frames, print a machine-checkable summary, exit 0.
@@ -50,8 +53,10 @@
 #include "GLLoader.h"
 #include "Renderer.h"
 #include "demos/BoxStack.h"
+#include "demos/Dominoes.h"
 #include "demos/FallingBall.h"
 #include "demos/FrictionRamp.h"
+#include "demos/IslandSleep500.h"
 #include "demos/Pyramid200.h"
 #include "demos/SphereStack.h"
 #include "demos/StressBenchmark.h"
@@ -134,12 +139,15 @@ struct CommandLineOptions {
 void PrintUsage() {
     std::printf("Usage: physics2d_testbed [--demo NAME] [--broadphase NAME] [--smoke N] [--hidden] [--help]\n"
                 "  --demo NAME start in this scene (FallingBall | SphereStack | BoxStack |\n"
-                "              FrictionRamp | Pyramid200 | StressBenchmark; default FallingBall).\n"
+                "              FrictionRamp | Dominoes | IslandSleep500 | Pyramid200 |\n"
+                "              StressBenchmark; default FallingBall).\n"
                 "              Matching is case-insensitive and ignores spaces/underscores.\n"
                 "  --broadphase NAME  broad phase: Auto | None | BruteForce (bf) | SAP.\n"
                 "              Default Auto: BruteForce below 32 bodies, SAP at/above (bench\n"
                 "              crossover); a manual choice sticks until Auto is picked again,\n"
                 "              or switch live in the Solver Settings panel.\n"
+                "  Keys: Space play/pause, '.' single step (while paused), 1/2/3 speed,\n"
+                "        R reset camera (middle-drag pan, wheel zoom)\n"
                 "  --smoke N   render N frames, print a summary and exit (0 = pass, 2 = no GL environment\n"
                 "              or unknown demo name)\n"
                 "  --hidden    hide the window (rendering still happens)\n"
@@ -522,6 +530,8 @@ int RunTestbed(const CommandLineOptions& options) {
     demos.push_back(std::make_unique<p2::SphereStackDemo>());
     demos.push_back(std::make_unique<p2::BoxStackDemo>());
     demos.push_back(std::make_unique<p2::FrictionRampDemo>());
+    demos.push_back(std::make_unique<p2::DominoesDemo>());
+    demos.push_back(std::make_unique<p2::IslandSleep500Demo>());
     demos.push_back(std::make_unique<p2::Pyramid200Demo>());
     demos.push_back(std::make_unique<p2::StressBenchmarkDemo>());
     std::vector<const char*> demoNames;
@@ -658,6 +668,17 @@ int RunTestbed(const CommandLineOptions& options) {
     int frameIndex = 0;
     int32_t totalPhysicsSteps = 0;
     double totalFrameMilliseconds = 0.0;
+    // Week 7: raw Step time of the previous frame, handed to the demos through
+    // DemoFrameStats.rawStepMilliseconds (IslandSleep500 averages its sleep windows from
+    // raw values so the host's smoothing does not blur the awake -> asleep transition).
+    float previousRawStepMilliseconds = 0.0f;
+    // Week 7 keyboard-shortcut edge detection (declared outside the loop so a held key
+    // fires once). Space = play/pause, '.' = single step while paused, 1/2/3 = speed.
+    bool spaceHeld = false;
+    bool periodHeld = false;
+    bool speed1Held = false;
+    bool speed2Held = false;
+    bool speed3Held = false;
 
     for (;;) {
         if (smokeMode && frameIndex >= options.smokeFrames) {
@@ -693,6 +714,34 @@ int RunTestbed(const CommandLineOptions& options) {
         const ImGuiIO& io = ImGui::GetIO();
         camera.UpdateInput(window, !io.WantCaptureMouse && !io.WantCaptureKeyboard);
 
+        // Week 7: keyboard playback shortcuts. Suppressed while ImGui owns the keyboard
+        // (typing in a panel / the ImGui demo window), so they never fight a text field.
+        // The on-screen buttons stay the discoverable path; README documents the keys.
+        const bool shortcutsAllowed = !io.WantCaptureKeyboard;
+        const bool spaceDown = shortcutsAllowed && glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+        if (spaceDown && !spaceHeld) {
+            debugUi.TogglePaused();
+        }
+        spaceHeld = spaceDown;
+        const bool periodDown = shortcutsAllowed && glfwGetKey(window, GLFW_KEY_PERIOD) == GLFW_PRESS;
+        const bool singleStepByKey = periodDown && !periodHeld && debugUi.IsPaused();
+        periodHeld = periodDown;
+        const bool speed1Down = shortcutsAllowed && glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS;
+        const bool speed2Down = shortcutsAllowed && glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS;
+        const bool speed3Down = shortcutsAllowed && glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS;
+        if (speed1Down && !speed1Held) {
+            debugUi.SetSpeedIndex(0); // 1x
+        }
+        if (speed2Down && !speed2Held) {
+            debugUi.SetSpeedIndex(1); // 0.5x
+        }
+        if (speed3Down && !speed3Held) {
+            debugUi.SetSpeedIndex(2); // 0.25x
+        }
+        speed1Held = speed1Down;
+        speed2Held = speed2Down;
+        speed3Held = speed3Down;
+
         int windowWidth = kInitialWindowWidth;
         int windowHeight = kInitialWindowHeight;
         glfwGetWindowSize(window, &windowWidth, &windowHeight);
@@ -704,10 +753,12 @@ int RunTestbed(const CommandLineOptions& options) {
         stats.physicsStepMilliseconds = smoothedStepMilliseconds;
         stats.physicsSteps = physicsStepsLastFrame;
 
-        // Week 6: scenes that display host timings (StressBenchmark) receive them before
-        // DebugUI::Draw calls Demo::Ui later in this frame.
-        demos[static_cast<std::size_t>(selectedDemo)]->SetFrameStats(
-            p2::DemoFrameStats{stats.framesPerSecond, stats.physicsStepMilliseconds});
+        // Week 6/7: scenes that display host timings (StressBenchmark, IslandSleep500)
+        // receive them before DebugUI::Draw calls Demo::Ui later in this frame. The raw
+        // field is the previous frame's value: main only knows this frame's Step cost
+        // after the physics block below.
+        demos[static_cast<std::size_t>(selectedDemo)]->SetFrameStats(p2::DemoFrameStats{
+            stats.framesPerSecond, stats.physicsStepMilliseconds, previousRawStepMilliseconds});
 
         const p2::DebugUI::FrameActions actions =
             debugUi.Draw(world, *demos[static_cast<std::size_t>(selectedDemo)], demoNames, selectedDemo,
@@ -752,7 +803,9 @@ int RunTestbed(const CommandLineOptions& options) {
         // automated check deterministic: 120 frames always means 120 steps.
         const float simulationFrameSeconds = smokeMode ? p2::kFixedTimeStep : frameMilliseconds * 0.001f;
         int32_t stepsThisFrame = 0;
-        if (actions.singleStepRequested) {
+        if (actions.singleStepRequested || singleStepByKey) {
+            // Keyboard '.' is a Week 7 shortcut that injects the same one-step action as
+            // the UI button (only reachable while paused, see the key handling above).
             stepsThisFrame = 1;
         } else if (!debugUi.IsPaused()) {
             // The speed multiplier scales accumulated simulated time, never the
@@ -773,6 +826,7 @@ int RunTestbed(const CommandLineOptions& options) {
         }
         totalPhysicsSteps += stepsThisFrame;
         physicsStepsLastFrame = stepsThisFrame;
+        previousRawStepMilliseconds = stepMilliseconds;
 
         // Demos advance with simulated time, not wall-clock time: when paused the
         // scene is frozen, and at 0.25x speed the visual animation slows down too.
@@ -889,17 +943,19 @@ int RunTestbed(const CommandLineOptions& options) {
         const int32_t candidatePairCount = world.GetBroadPhasePairCount();
 
         // One machine-readable line for automated verification: scene id, counts,
-        // penetration, motion/height aggregates, broad-phase numbers and timing. The
-        // per-body / per-contact lines below carry the state a verdict actually needs
-        // (final heights and velocities, which pairs still touch, and the accumulated
-        // solver impulses).
-        std::printf("[smoke] demo=%s frames=%d physics_steps=%d bodies=%d shapes=%d contacts=%d "
-                    "contact_points=%d max_penetration_mm=%.3f max_speed_mps=%.3f max_tilt_deg=%.2f "
-                    "max_center_y=%.3f broadphase=%s candidate_pairs=%d proxies=%d avg_frame_ms=%.3f\n",
+        // penetration, motion/height aggregates, Week 7 island/sleep state, broad-phase
+        // numbers and timing. The per-body / per-contact lines below carry the state a
+        // verdict actually needs (final heights and velocities, which pairs still touch,
+        // and the accumulated solver impulses).
+        std::printf("[smoke] demo=%s frames=%d physics_steps=%d bodies=%d shapes=%d islands=%d awake=%d "
+                    "sleeping=%d contacts=%d contact_points=%d max_penetration_mm=%.3f max_speed_mps=%.3f "
+                    "max_tilt_deg=%.2f max_center_y=%.3f broadphase=%s candidate_pairs=%d proxies=%d "
+                    "avg_frame_ms=%.3f\n",
                     compactDemoName.c_str(), frameIndex, totalPhysicsSteps, world.GetBodyCount(),
-                    world.GetShapeCount(), touchingContactCount, contactPointCount, maxPenetration * 1000.0f,
-                    maxSpeedMetersPerSecond, maxTiltDegrees, maxCenterY, broadPhaseName, candidatePairCount,
-                    proxyCount, averageFrameMilliseconds);
+                    world.GetShapeCount(), world.GetIslandCount(), world.GetAwakeBodyCount(),
+                    world.GetSleepingBodyCount(), touchingContactCount, contactPointCount,
+                    maxPenetration * 1000.0f, maxSpeedMetersPerSecond, maxTiltDegrees, maxCenterY,
+                    broadPhaseName, candidatePairCount, proxyCount, averageFrameMilliseconds);
 
         // The solver configuration the run actually used: quoting smoke numbers
         // without these would make a warm-start / split-impulse comparison meaningless.
@@ -907,12 +963,13 @@ int RunTestbed(const CommandLineOptions& options) {
         std::printf(
             "[smoke] solver velocity_iterations=%d position_iterations=%d warm_starting=%d "
             "warm_start_factor=%.2f split_impulse=%d split_impulse_beta=%.2f linear_slop_m=%.4f "
-            "sat_cache=%d gravity_y=%.1f\n",
+            "sat_cache=%d gravity_y=%.1f enable_sleeping=%d use_island_solving=%d\n",
             solverSettings.velocityIterations, solverSettings.positionIterations,
             solverSettings.useWarmStarting ? 1 : 0, static_cast<double>(solverSettings.warmStartFactor),
             solverSettings.useSplitImpulse ? 1 : 0, static_cast<double>(solverSettings.splitImpulseBeta),
             static_cast<double>(solverSettings.linearSlop), solverSettings.useSatCache ? 1 : 0,
-            static_cast<double>(world.GetGravity().y));
+            static_cast<double>(world.GetGravity().y), solverSettings.enableSleeping ? 1 : 0,
+            solverSettings.useIslandSolving ? 1 : 0);
 
         // 16 is a readable sample: the Week 6 stress scenes have 210/400 bodies, and
         // their verdict is the aggregate line above (counts + penetration + broad-phase
@@ -964,6 +1021,11 @@ int RunTestbed(const CommandLineOptions& options) {
                 break;
             }
         }
+
+        // Week 7: scene-specific smoke lines (Dominoes chain state, IslandSleep500
+        // awake-vs-asleep Step-time comparison). The optional Demo hook keeps main.cpp
+        // generic instead of special-casing scene names here.
+        reportedDemo.PrintSmokeSummary(world);
     } else if (frameIndex > 0) {
         std::printf("[testbed] closed after %d frames, %d physics steps\n", frameIndex, totalPhysicsSteps);
     }

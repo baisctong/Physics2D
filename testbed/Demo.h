@@ -30,10 +30,13 @@ class World;
 
 // Host-loop timings handed to Demo::SetFrameStats. Deliberately tiny: only what a
 // demo panel would quote. FPS is the smoothed frame rate, stepMilliseconds is the
-// smoothed cost of one World::Step (or of the whole stepped batch this frame).
+// smoothed cost of one World::Step (or of the whole stepped batch this frame), and
+// rawStepMilliseconds is this frame's un-smoothed Step cost - Week 7's IslandSleep500
+// averages the two sleep states from RAW values so the EMA does not blur the transition.
 struct DemoFrameStats {
     float framesPerSecond = 0.0f;
     float stepMilliseconds = 0.0f;
+    float rawStepMilliseconds = 0.0f;
 };
 
 class Demo {
@@ -54,6 +57,11 @@ class Demo {
 
     // Non-pure on purpose: the timing readout is a Week 6 convenience for one scene.
     virtual void SetFrameStats(const DemoFrameStats& /*stats*/) {}
+
+    // Week 7: scene-specific smoke summary lines printed after main.cpp's generic
+    // `[smoke] demo=...` block (Dominoes chain state, IslandSleep500 awake-vs-asleep
+    // Step-time comparison). Non-pure: most scenes have nothing scene-specific to add.
+    virtual void PrintSmokeSummary(const World& /*world*/) const {}
 
   protected:
     Demo() = default;
