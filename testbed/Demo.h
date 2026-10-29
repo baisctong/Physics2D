@@ -17,11 +17,24 @@
 //    display toggles) live in DebugUI.
 //  - Reset() rebuilds the scene inside the World (Clear + Setup is the canonical
 //    implementation) and is bound to the UI reset button.
+//
+// Week 6: a scene that displays performance numbers (StressBenchmark) needs the host
+// loop's timings. Rather than widening Ui() for every demo, the host pushes one small
+// stats struct per frame into an optional hook; demos that do not display timings keep
+// the do-nothing default. This is a testbed-internal addition (no core API change).
 
 namespace p2 {
 
 class Renderer;
 class World;
+
+// Host-loop timings handed to Demo::SetFrameStats. Deliberately tiny: only what a
+// demo panel would quote. FPS is the smoothed frame rate, stepMilliseconds is the
+// smoothed cost of one World::Step (or of the whole stepped batch this frame).
+struct DemoFrameStats {
+    float framesPerSecond = 0.0f;
+    float stepMilliseconds = 0.0f;
+};
 
 class Demo {
   public:
@@ -38,6 +51,9 @@ class Demo {
     virtual void Draw(Renderer& renderer, const World& world) = 0;
     virtual void Ui(World& world) = 0;
     virtual void Reset(World& world) = 0;
+
+    // Non-pure on purpose: the timing readout is a Week 6 convenience for one scene.
+    virtual void SetFrameStats(const DemoFrameStats& /*stats*/) {}
 
   protected:
     Demo() = default;

@@ -12,14 +12,20 @@
 //     parameter set;
 //   - Solver Settings: edits a copy of World::GetSolverSettings() and writes it
 //     back with World::SetSolverSettings(). Every slider therefore takes effect
-//     on the next fixed step - no scene rebuild, no restart;
+//     on the next fixed step - no scene rebuild, no restart. Since Week 6 the same
+//     panel also hosts the broad-phase dropdown (Auto / None / BruteForce / SAP)
+//     with the live installed implementation, proxy and candidate-pair counts;
+//     switching implementations only swaps World's broad-phase object, the scene is
+//     never rebuilt. Auto is the default and dispatches on the bench-measured body
+//     count crossover (see BroadPhaseMode below);
 //   - Contacts: reads World::GetContacts() (rebuilt every Step) and lets the
 //     user click a pair to highlight it. main.cpp draws the highlighted contact
 //     point and normal in a distinct colour so a clicked row is visible in the
 //     scene;
 //   - Status: FPS / frame + Step timings, body/shape/awake counts, contact and
-//     contact-point counts, max penetration, island count (0 until Week 7) and
-//     the active solver settings.
+//     contact-point counts, max penetration, island count (0 until Week 7),
+//     broad-phase name / proxy / candidate-pair counts and the active solver
+//     settings.
 //
 // Layout ownership: the panel owns UI state (paused / speed / scene selection /
 // material defaults); the host loop owns the simulation state. The two are
@@ -92,6 +98,36 @@ class DebugUI {
         float restitution = 0.0f; // mirrors BodyDef::restitution
     };
 
+    // Week 6: broad-phase selection policy. World owns only the object; the testbed owns
+    // the choice:
+    //  - Auto (default): main.cpp calls ApplyBroadPhase() after every scene build and it
+    //    installs BruteForce for small scenes and SAP above kBroadPhaseAutoThreshold;
+    //  - None / BruteForce / SAP: manual override from the Solver Settings dropdown or
+    //    --broadphase. An override survives scene switches until Auto is chosen again
+    //    (main re-applies the current mode on every build; the dropdown re-installs
+    //    immediately when it changes).
+    // The physics must not depend on the choice: World canonicalises the candidate pairs
+    // before the narrow phase. "None" makes World fall back to its built-in O(N^2)
+    // enumeration (the Week 2-5 path).
+    enum class BroadPhaseMode : int { Auto = 0, None = 1, BruteForce = 2, SAP = 3 };
+
+    // Bench-derived dispatch crossover (Release build, seed42, 1000 frames, dev machine;
+    // the full table is in testbed/README.md and the root README performance table):
+    // SAP is slower than BruteForce below ~25 bodies (N=20: 0.80x) and clearly faster
+    // above (N=50: 2.12x, N=200: 4.99x, N=500: 5.91x), so 32 sits on the conservative
+    // side of the measured 25-32 crossover.
+    static constexpr int32_t kBroadPhaseAutoThreshold = 32;
+
+    [[nodiscard]] static const char* BroadPhaseModeName(BroadPhaseMode mode) noexcept;
+
+    [[nodiscard]] BroadPhaseMode GetBroadPhaseMode() const noexcept { return m_broadPhaseMode; }
+    void SetBroadPhaseMode(BroadPhaseMode mode) noexcept { m_broadPhaseMode = mode; }
+
+    // Installs the broad phase selected by the current mode (Auto re-derives from the
+    // world's live body count). Called by main.cpp after a scene is built or reset -
+    // never every frame - and by the dropdown on a mode change (no body rebuild).
+    void ApplyBroadPhase(World& world);
+
     DebugUI() = default;
 
     // Draws the panels (and the optional Dear ImGui demo window). `selectedDemo`
@@ -120,6 +156,7 @@ class DebugUI {
     int m_speedIndex = 0; // index into kSpeedMultipliers
     bool m_showImGuiDemo = false;
     MaterialDefaults m_materialDefaults;
+    BroadPhaseMode m_broadPhaseMode = BroadPhaseMode::Auto;
 };
 
 } // namespace p2

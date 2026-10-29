@@ -14,6 +14,7 @@
 // Column-major 4x4 MVP: the renderer feeds it straight into
 // glUniformMatrix4fv(..., GL_FALSE, ...), matching the GLSL mat4 memory layout.
 
+#include "physics2d/Math/AABB.h"
 #include "physics2d/Math/Vec2.h"
 
 #include <array>
@@ -35,7 +36,25 @@ class Camera {
     static constexpr float kMaxZoom = 20.0f;
     static constexpr float kZoomStep = 1.1f;
 
+    // Auto-framing limits for FocusOnWorld. Week 6 scenes (Pyramid200: a 20 m tall
+    // pyramid; StressBenchmark: a random box field) do not fit the default 32x20 m
+    // view, so the host focuses once when a scene is built. 0.2 sees 5x the default
+    // area, 3.0 is a close-up of a small scene; the user's wheel/pan own the camera
+    // afterwards (FocusOnWorld is only called on setup/reset/demo switch).
+    static constexpr float kFocusMinZoom = 0.2f;
+    static constexpr float kFocusMaxZoom = 3.0f;
+    // Padding around the framed bounds (fraction of each half extent) and a floor for
+    // degenerate bounds, so a one-point scene still produces a readable view.
+    static constexpr float kFocusPaddingRatio = 0.15f;
+    static constexpr float kFocusMinHalfExtent = 0.5f;
+
     void SetViewportSize(int32_t widthPixels, int32_t heightPixels) noexcept;
+
+    // Frames a world-space AABB once (scene setup / reset / demo switch). The host
+    // loop decides when: calling it every frame would fight the user's pan/zoom.
+    // The bounds must already exclude infinite shapes (planes); an invalid AABB
+    // leaves the camera untouched.
+    void FocusOnWorld(const AABB& bounds) noexcept;
 
     // Center (0,0) at 1x zoom. Bound to the R key, and also the state the
     // "reset view" path restores when a demo is switched.
@@ -58,6 +77,11 @@ class Camera {
     [[nodiscard]] float GetPixelsPerMeter() const noexcept { return kPixelsPerMeter * m_zoom; }
     [[nodiscard]] float GetZoom() const noexcept { return m_zoom; }
     [[nodiscard]] Vec2 GetCenter() const noexcept { return m_center; }
+
+    // Half extents (m) of the world rectangle visible at zoom 1 (the default framing).
+    // The host uses it to decide whether a scene already fits the conventional
+    // origin-centred view (small scenes keep it) or needs auto-framing (Week 6 scenes).
+    [[nodiscard]] Vec2 GetDefaultHalfExtents() const noexcept;
 
     // Column-major mat4 (16 floats) mapping world space to OpenGL NDC.
     [[nodiscard]] std::array<float, 16> GetViewProjectionMatrix() const noexcept;

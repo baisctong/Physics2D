@@ -14,6 +14,14 @@ namespace {
     return Clamp(zoom, Camera::kMinZoom, Camera::kMaxZoom);
 }
 
+// Auto-framing uses a different band from the interactive limits: a scene that is
+// much larger than the default view should not be framed at a user-zoom-in level, and
+// an enormous scene should still leave readable geometry rather than collapsing to the
+// 0.1 floor.
+[[nodiscard]] float ClampFocusZoom(float zoom) noexcept {
+    return Clamp(zoom, Camera::kFocusMinZoom, Camera::kFocusMaxZoom);
+}
+
 } // namespace
 
 void Camera::SetViewportSize(int32_t widthPixels, int32_t heightPixels) noexcept {
@@ -24,12 +32,45 @@ void Camera::SetViewportSize(int32_t widthPixels, int32_t heightPixels) noexcept
     m_heightPixels = heightPixels > 1 ? heightPixels : 1;
 }
 
+void Camera::FocusOnWorld(const AABB& bounds) noexcept {
+    if (!bounds.IsValid()) {
+        // Nothing meaningful to frame: keep whatever the user/caller had.
+        return;
+    }
+    // Fit the padded bounds into the current viewport, keeping the aspect ratio (the
+    // limiting axis wins). Default 1x shows 32x20 m at 1280x800; a 20 m tall pyramid
+    // therefore lands around zoom 0.87, a 36 m wide stress field around 0.77.
+    const Vec2 center = bounds.GetCenter();
+    const Vec2 extents = bounds.GetExtents();
+    const float halfWidthMeters = std::max(extents.x, kFocusMinHalfExtent) * (1.0f + kFocusPaddingRatio);
+    const float halfHeightMeters = std::max(extents.y, kFocusMinHalfExtent) * (1.0f + kFocusPaddingRatio);
+    const float viewportHalfWidthPixels = static_cast<float>(m_widthPixels) * 0.5f;
+    const float viewportHalfHeightPixels = static_cast<float>(m_heightPixels) * 0.5f;
+    const float zoomForWidth = viewportHalfWidthPixels / (halfWidthMeters * kPixelsPerMeter);
+    const float zoomForHeight = viewportHalfHeightPixels / (halfHeightMeters * kPixelsPerMeter);
+
+    m_center = center;
+    m_zoom = ClampFocusZoom(std::min(zoomForWidth, zoomForHeight));
+    // A focus is a deliberate view change: it also ends any in-flight pan/zoom gesture
+    // so a stale anchor cannot snap the view back on the next mouse move.
+    m_panning = false;
+    m_pendingScrollSteps = 0.0f;
+    m_resetRequested = false;
+}
+
 void Camera::Reset() noexcept {
     m_center = {0.0f, 0.0f};
     m_zoom = 1.0f;
     m_panning = false;
     m_pendingScrollSteps = 0.0f;
     m_resetRequested = false;
+}
+
+Vec2 Camera::GetDefaultHalfExtents() const noexcept {
+    // At zoom 1 the scale is exactly kPixelsPerMeter; the viewport size is already
+    // clamped to >= 1 pixel by SetViewportSize, so no division guard is needed here.
+    return {static_cast<float>(m_widthPixels) * 0.5f / kPixelsPerMeter,
+            static_cast<float>(m_heightPixels) * 0.5f / kPixelsPerMeter};
 }
 
 void Camera::InstallInputCallbacks(GLFWwindow* window) {

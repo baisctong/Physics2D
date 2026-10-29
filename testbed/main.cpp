@@ -1,6 +1,8 @@
 // physics2d_testbed - interactive testbed entry point (Week 1 D5/D6; contact
 // overlay in Week 2; selectable scenes in Weeks 3-4; Week 5 adds the Solver and
-// Contacts panels, the clickable contact highlight and the FrictionRamp scene).
+// Contacts panels, the clickable contact highlight and the FrictionRamp scene; Week 6
+// adds the broad-phase switch/default, auto camera framing and the Pyramid200 /
+// StressBenchmark scenes).
 //
 // Responsibilities (and nothing else):
 //   1. Create the GLFW window / OpenGL 3.3 core context and initialise Dear ImGui
@@ -14,8 +16,11 @@
 //      display-option parameter, so every scene gets the same debug view from one
 //      place.
 //   5. Apply the DebugUI material defaults when a scene is built (Week 5 solver
-//      experiments: e.g. friction 0 on BoxStack). The solver settings themselves are
-//      written by DebugUI straight into World::SetSolverSettings.
+//      experiments: e.g. friction 0 on BoxStack), install the broad phase (Week 6:
+//      default SAP so smoke runs also go through the broad-phase path) and focus the
+//      camera once per scene build (Week 6 scenes are bigger than the default view).
+//      The solver settings themselves are written by DebugUI straight into
+//      World::SetSolverSettings; the broad-phase dropdown writes World::SetBroadPhase.
 //
 // Fixed timestep: p2::StepAccumulator turns the variable frame time into a whole
 // number of 1/60 s steps (Section 4.3), at most kMaxStepsPerFrame per frame to stop
@@ -26,11 +31,13 @@
 //
 // CLI:
 //   --demo NAME choose the initial scene (FallingBall | SphereStack | BoxStack |
-//               FrictionRamp, default FallingBall). Matching is case-insensitive and
-//               ignores spaces, underscores and hyphens, so "spherestack" and
-//               "Sphere Stack" both work. An unknown name prints the available list
-//               and exits with code 2 so smoke automation can distinguish a typo
-//               from a physics failure.
+//               FrictionRamp | Pyramid200 | StressBenchmark, default FallingBall).
+//               Matching is case-insensitive and ignores spaces, underscores and
+//               hyphens, so "spherestack" and "Sphere Stack" both work. An unknown
+//               name prints the available list and exits with code 2 so smoke
+//               automation can distinguish a typo from a physics failure.
+//   --broadphase NAME  broad phase: None | BruteForce (bf) | SAP (default SAP). Same
+//               loose name matching. Unknown values are a usage error (exit 1).
 //   --smoke N   render N frames, print a machine-checkable summary, exit 0.
 //               In smoke mode the loop feeds the accumulator a deterministic
 //               1/60 s per frame, so N frames == N physics steps regardless of
@@ -45,7 +52,9 @@
 #include "demos/BoxStack.h"
 #include "demos/FallingBall.h"
 #include "demos/FrictionRamp.h"
+#include "demos/Pyramid200.h"
 #include "demos/SphereStack.h"
+#include "demos/StressBenchmark.h"
 
 #include "physics2d/Core/Settings.h"
 #include "physics2d/Core/TimeStep.h"
@@ -58,6 +67,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -105,21 +115,31 @@ constexpr float kVelocityArrowScale = 0.10f;
 constexpr float kVelocityArrowThresholdSquared = 0.02f * 0.02f;
 constexpr p2::Color kVelocityArrowColor{0.30f, 0.75f, 1.00f, 1.0f};
 
+// AABB overlay cutoff: the infinite plane's proxy box is kPlaneAabbExtent on a side
+// (1e6 m), while every finite scene here stays orders of magnitude below this. The
+// overlay skips anything bigger so it never submits a 2000 km line to the renderer.
+constexpr float kMaxDrawableAabbExtent = 1.0e5f;
+
 struct CommandLineOptions {
     int smokeFrames = 0; // 0 means interactive mode
     bool hidden = false;
     bool helpRequested = false;
     std::string demoName = "FallingBall"; // scene id, matched against Demo::Name()
+    std::string broadPhaseName = "Auto";  // resolved to a DebugUI::BroadPhaseMode in RunTestbed
 };
 
 // The binary name is spelled out instead of using argv[0]: the repository path may
 // contain non-ASCII characters, and printing argv[0] to a GBK/UTF-8 mixed console
 // turns the usage line into mojibake.
 void PrintUsage() {
-    std::printf("Usage: physics2d_testbed [--demo NAME] [--smoke N] [--hidden] [--help]\n"
+    std::printf("Usage: physics2d_testbed [--demo NAME] [--broadphase NAME] [--smoke N] [--hidden] [--help]\n"
                 "  --demo NAME start in this scene (FallingBall | SphereStack | BoxStack |\n"
-                "              FrictionRamp; default FallingBall).\n"
+                "              FrictionRamp | Pyramid200 | StressBenchmark; default FallingBall).\n"
                 "              Matching is case-insensitive and ignores spaces/underscores.\n"
+                "  --broadphase NAME  broad phase: Auto | None | BruteForce (bf) | SAP.\n"
+                "              Default Auto: BruteForce below 32 bodies, SAP at/above (bench\n"
+                "              crossover); a manual choice sticks until Auto is picked again,\n"
+                "              or switch live in the Solver Settings panel.\n"
                 "  --smoke N   render N frames, print a summary and exit (0 = pass, 2 = no GL environment\n"
                 "              or unknown demo name)\n"
                 "  --hidden    hide the window (rendering still happens)\n"
@@ -150,6 +170,12 @@ void PrintUsage() {
                 return false;
             }
             options.demoName = argv[++argumentIndex];
+        } else if (std::strcmp(argument, "--broadphase") == 0) {
+            if (argumentIndex + 1 >= argc) {
+                std::fprintf(stderr, "[testbed] --broadphase requires a name: None, BruteForce or SAP\n");
+                return false;
+            }
+            options.broadPhaseName = argv[++argumentIndex];
         } else if (std::strcmp(argument, "--help") == 0 || std::strcmp(argument, "-h") == 0) {
             options.helpRequested = true;
             return true;
@@ -226,6 +252,87 @@ void GlfwErrorCallback(int errorCode, const char* description) {
         }
     }
     return -1;
+}
+
+// ---- Week 6: broad-phase selection -------------------------------------------
+// The testbed owns the policy (DebugUI::BroadPhaseMode), World owns the object:
+//  - Auto (CLI default): after every scene build the host calls
+//    DebugUI::ApplyBroadPhase, which installs BruteForce for small scenes and SAP above
+//    the bench-measured crossover (DebugUI::kBroadPhaseAutoThreshold = 32 bodies);
+//  - None / BruteForce / SAP are explicit overrides (--broadphase or the panel
+//    dropdown) that survive scene switches until Auto is selected again.
+// All choices must produce identical physics because World canonicalises the candidate
+// pairs before the narrow phase; only proxies/candidate-pair counts differ.
+// (The actual installation lives in DebugUI.cpp; main only mirrors the CLI string.)
+[[nodiscard]] bool ResolveBroadPhaseMode(const std::string& requestedName,
+                                         p2::DebugUI::BroadPhaseMode& mode) {
+    if (MatchesSceneName("Auto", requestedName.c_str())) {
+        mode = p2::DebugUI::BroadPhaseMode::Auto;
+        return true;
+    }
+    if (MatchesSceneName("None", requestedName.c_str())) {
+        mode = p2::DebugUI::BroadPhaseMode::None;
+        return true;
+    }
+    if (MatchesSceneName("BruteForce", requestedName.c_str()) ||
+        MatchesSceneName("Brute", requestedName.c_str()) || MatchesSceneName("BF", requestedName.c_str())) {
+        mode = p2::DebugUI::BroadPhaseMode::BruteForce;
+        return true;
+    }
+    if (MatchesSceneName("SAP", requestedName.c_str())) {
+        mode = p2::DebugUI::BroadPhaseMode::SAP;
+        return true;
+    }
+    return false;
+}
+
+// ---- Week 6: camera framing ---------------------------------------------------
+// The Week 6 scenes are bigger than the default 32x20 m view (Pyramid200 is 20 m tall,
+// the StressBenchmark field spans ~36 m). The host focuses the camera ONCE per scene
+// build; focusing every frame would fight the user's pan/zoom. The infinite ground
+// plane is skipped: its proxy AABB is deliberately huge and would dominate any union.
+[[nodiscard]] bool ComputeFiniteSceneBounds(const p2::World& world, p2::AABB& bounds) {
+    bool hasBounds = false;
+    for (const p2::Body& body : world.GetBodies()) {
+        if (!body.handle.IsValid() || !world.IsValid(body.handle) || !world.IsValidShape(body.shape)) {
+            continue;
+        }
+        const p2::Shape* shape = world.GetShape(body.shape);
+        if (shape == nullptr || shape->type == p2::ShapeType::Plane) {
+            continue;
+        }
+        // body.aabb already includes the Week 6 fat margin (+kAabbMargin); FocusOnWorld
+        // adds its own padding ratio on top, so the framing has a little breathing room.
+        bounds = hasBounds ? p2::Union(bounds, body.aabb) : body.aabb;
+        hasBounds = true;
+    }
+    return hasBounds;
+}
+
+void FocusCameraOnScene(const p2::World& world, p2::Camera& camera) {
+    p2::AABB bounds;
+    if (!ComputeFiniteSceneBounds(world, bounds)) {
+        return;
+    }
+    // Small scenes keep the conventional origin-centred 1x view: a close-up framing of
+    // FallingBall would push its ground line off screen and change the look of the
+    // Week 1-5 scenes for no benefit. The test is bounds-containment in the default view
+    // rectangle (not just extent comparison) because scenes sit on the ground: a 16 m
+    // tall pyramid has 8 m half extents but spans y=0..16, which the centred view clips.
+    // 0.85 leaves a margin so a scene touching the window edge still gets framed.
+    const p2::Vec2 defaultView = camera.GetDefaultHalfExtents();
+    constexpr float kViewFitMarginRatio = 0.85f;
+    const bool fitsDefaultView = bounds.lowerBound.x >= -defaultView.x * kViewFitMarginRatio &&
+                                 bounds.upperBound.x <= defaultView.x * kViewFitMarginRatio &&
+                                 bounds.lowerBound.y >= -defaultView.y * kViewFitMarginRatio &&
+                                 bounds.upperBound.y <= defaultView.y * kViewFitMarginRatio;
+    if (fitsDefaultView) {
+        // Reset (not "leave as is"): after a zoomed-out Week 6 scene the next small
+        // scene must not inherit that camera state.
+        camera.Reset();
+        return;
+    }
+    camera.FocusOnWorld(bounds);
 }
 
 // ---- contact / velocity debug overlays (Week 2, extended Week 5) --------------
@@ -415,6 +522,8 @@ int RunTestbed(const CommandLineOptions& options) {
     demos.push_back(std::make_unique<p2::SphereStackDemo>());
     demos.push_back(std::make_unique<p2::BoxStackDemo>());
     demos.push_back(std::make_unique<p2::FrictionRampDemo>());
+    demos.push_back(std::make_unique<p2::Pyramid200Demo>());
+    demos.push_back(std::make_unique<p2::StressBenchmarkDemo>());
     std::vector<const char*> demoNames;
     demoNames.reserve(demos.size());
     for (const std::unique_ptr<p2::Demo>& demo : demos) {
@@ -434,6 +543,24 @@ int RunTestbed(const CommandLineOptions& options) {
         return kExitUnknownDemo;
     }
     int selectedDemo = initialDemoIndex;
+
+    // Broad phase is a CLI configuration choice like the scene name: resolve it before
+    // touching GLFW/GL so a typo is diagnosable on any machine (and with --hidden).
+    p2::DebugUI::BroadPhaseMode broadPhaseMode = p2::DebugUI::BroadPhaseMode::Auto;
+    if (!ResolveBroadPhaseMode(options.broadPhaseName, broadPhaseMode)) {
+        std::fprintf(stderr,
+                     "[testbed] unknown broad phase '%s'\n[testbed] available broad phases: Auto, None, "
+                     "BruteForce (bf), SAP\n",
+                     options.broadPhaseName.c_str());
+        return kExitFailure;
+    }
+    if (broadPhaseMode == p2::DebugUI::BroadPhaseMode::Auto) {
+        std::printf("[testbed] broad phase: Auto (BruteForce < %d bodies, SAP >= %d; bench crossover)\n",
+                    p2::DebugUI::kBroadPhaseAutoThreshold, p2::DebugUI::kBroadPhaseAutoThreshold);
+    } else {
+        std::printf("[testbed] broad phase: %s (manual override, --broadphase)\n",
+                    p2::DebugUI::BroadPhaseModeName(broadPhaseMode));
+    }
 
     glfwSetErrorCallback(&GlfwErrorCallback);
     GlfwRuntime glfwRuntime;
@@ -508,12 +635,20 @@ int RunTestbed(const CommandLineOptions& options) {
     p2::World world;
     p2::StepAccumulator accumulator(p2::kFixedTimeStep, p2::kMaxStepsPerFrame);
     // DebugUI is constructed before the first scene build so the material defaults
-    // (Week 5 solver experiments) are applied uniformly to the initial scene and to
-    // every later scene switch.
+    // (Week 5 solver experiments) and the Week 6 broad-phase policy are applied
+    // uniformly to the initial scene and to every later scene switch.
     p2::DebugUI debugUi;
     p2::DebugUI::DisplayOptions displayOptions;
+    debugUi.SetBroadPhaseMode(broadPhaseMode);
     demos[static_cast<std::size_t>(selectedDemo)]->Setup(world);
+    // Week 6: the broad phase is chosen AFTER the scene exists, because Auto dispatches
+    // on the live body count (small scenes: BruteForce, large: SAP). Nothing has stepped
+    // yet, so installing now is equivalent to installing before setup.
+    debugUi.ApplyBroadPhase(world);
     ApplyMaterialDefaults(world, debugUi.GetMaterialDefaults());
+    // Week 6: frame the scene once. The 20 m pyramid and the random stress field are
+    // larger than the default 32x20 m view; focusing per frame would fight pan/zoom.
+    FocusCameraOnScene(world, camera);
 
     using Clock = std::chrono::steady_clock;
     Clock::time_point previousFrameTime = Clock::now();
@@ -569,6 +704,11 @@ int RunTestbed(const CommandLineOptions& options) {
         stats.physicsStepMilliseconds = smoothedStepMilliseconds;
         stats.physicsSteps = physicsStepsLastFrame;
 
+        // Week 6: scenes that display host timings (StressBenchmark) receive them before
+        // DebugUI::Draw calls Demo::Ui later in this frame.
+        demos[static_cast<std::size_t>(selectedDemo)]->SetFrameStats(
+            p2::DemoFrameStats{stats.framesPerSecond, stats.physicsStepMilliseconds});
+
         const p2::DebugUI::FrameActions actions =
             debugUi.Draw(world, *demos[static_cast<std::size_t>(selectedDemo)], demoNames, selectedDemo,
                          stats, displayOptions);
@@ -581,16 +721,27 @@ int RunTestbed(const CommandLineOptions& options) {
             world.Clear();
             demos[static_cast<std::size_t>(selectedDemo)]->Setup(world);
             accumulator.Reset();
+            // Week 6: re-apply the broad-phase mode after every scene build. In Auto it
+            // re-derives BruteForce/SAP from the new body count; a manual override is kept
+            // (the panel says so). World::Clear released the old proxies, the new ones are
+            // inserted on the first Step.
+            debugUi.ApplyBroadPhase(world);
             // Week 5: a newly built scene picks up the panel's material defaults
             // (friction/restitution experiments). Reset() deliberately does not: a
             // demo's own Reset keeps the material state the user tuned in its Ui.
             ApplyMaterialDefaults(world, debugUi.GetMaterialDefaults());
+            // Week 6: frame the new scene once.
+            FocusCameraOnScene(world, camera);
         }
         if (actions.applyMaterialDefaultsRequested) {
             ApplyMaterialDefaults(world, debugUi.GetMaterialDefaults());
         }
         if (actions.resetRequested) {
             demos[static_cast<std::size_t>(selectedDemo)]->Reset(world);
+            // A rebuild can change the scene size (Pyramid200 layer count, StressBenchmark
+            // box count), so re-apply the broad-phase mode (Auto re-dispatches) and reframe.
+            debugUi.ApplyBroadPhase(world);
+            FocusCameraOnScene(world, camera);
         }
         // Re-bind after the actions: the combo box may have changed the selection,
         // and stepping/rendering must use the new scene's demo object.
@@ -649,16 +800,21 @@ int RunTestbed(const CommandLineOptions& options) {
             renderer.DrawAxes(5.0f);
         }
         if (displayOptions.showAabb) {
-            // Week 2: Synchronize() fills Body::aabb from the attached shapes. The
-            // infinite plane's AABB is deliberately enormous and lies outside the
-            // view, so only finite shapes (the ball) show a visible box. The
-            // degeneracy guard keeps bodies without a shape from littering the origin.
+            // Week 6: Synchronize() now stores a FAT AABB (tight bounds + kAabbMargin) -
+            // the broad phase sees that box, so the overlay intentionally shows the
+            // inflated bound rather than the tight one. The infinite plane's AABB is
+            // deliberately enormous; skip it (and collider-less bodies) so the overlay
+            // does not try to draw a 2000 km box.
             for (const p2::Body& body : world.GetBodies()) {
                 if (!body.handle.IsValid() || !world.IsValid(body.handle)) {
                     continue;
                 }
                 if (body.aabb.GetWidth() <= 0.0f && body.aabb.GetHeight() <= 0.0f) {
                     continue;
+                }
+                if (body.aabb.GetWidth() > kMaxDrawableAabbExtent ||
+                    body.aabb.GetHeight() > kMaxDrawableAabbExtent) {
+                    continue; // infinite plane / degenerate proxy
                 }
                 renderer.DrawAABB(body.aabb, p2::Color{0.45f, 0.75f, 0.45f, 0.6f});
             }
@@ -706,15 +862,44 @@ int RunTestbed(const CommandLineOptions& options) {
             maxPenetration = std::max(maxPenetration, contact.manifold.penetration);
         }
 
+        // Body aggregates for the stress scenes: the Week 6 pyramid/random-field verdict
+        // cannot be read off 400 per-body lines, so the summary carries the worst tilt,
+        // the fastest body and the highest centre (the top-height evidence for a stack
+        // that sank or toppled). Static bodies are skipped: they are the reference.
+        float maxSpeedMetersPerSecond = 0.0f;
+        float maxTiltDegrees = 0.0f;
+        float maxCenterY = 0.0f;
+        for (const p2::Body& body : world.GetBodies()) {
+            if (!body.handle.IsValid() || !world.IsValid(body.handle) || body.type == p2::BodyType::Static) {
+                continue;
+            }
+            maxSpeedMetersPerSecond =
+                std::max(maxSpeedMetersPerSecond, p2::Length(world.GetLinearVelocity(body.handle)));
+            maxTiltDegrees = std::max(maxTiltDegrees, std::fabs(world.GetAngle(body.handle) * p2::kRadToDeg));
+            maxCenterY = std::max(maxCenterY, world.GetPosition(body.handle).y);
+        }
+
+        // Week 6: which broad phase produced this run and what it handed to the narrow
+        // phase. Having these on the summary line turns the SAP/BruteForce/None
+        // comparison into a one-line diff: candidate_pairs/proxies differ by
+        // implementation, while every body/contact line below must stay identical.
+        const p2::IBroadPhase* installedBroadPhase = world.GetBroadPhase();
+        const char* broadPhaseName = installedBroadPhase != nullptr ? installedBroadPhase->Name() : "None";
+        const int32_t proxyCount = installedBroadPhase != nullptr ? installedBroadPhase->GetProxyCount() : 0;
+        const int32_t candidatePairCount = world.GetBroadPhasePairCount();
+
         // One machine-readable line for automated verification: scene id, counts,
-        // penetration and timing. The per-body / per-contact lines below carry the
-        // state a verdict actually needs (final heights and velocities, which pairs
-        // still touch, and the accumulated solver impulses).
+        // penetration, motion/height aggregates, broad-phase numbers and timing. The
+        // per-body / per-contact lines below carry the state a verdict actually needs
+        // (final heights and velocities, which pairs still touch, and the accumulated
+        // solver impulses).
         std::printf("[smoke] demo=%s frames=%d physics_steps=%d bodies=%d shapes=%d contacts=%d "
-                    "contact_points=%d max_penetration_mm=%.3f avg_frame_ms=%.3f\n",
+                    "contact_points=%d max_penetration_mm=%.3f max_speed_mps=%.3f max_tilt_deg=%.2f "
+                    "max_center_y=%.3f broadphase=%s candidate_pairs=%d proxies=%d avg_frame_ms=%.3f\n",
                     compactDemoName.c_str(), frameIndex, totalPhysicsSteps, world.GetBodyCount(),
                     world.GetShapeCount(), touchingContactCount, contactPointCount, maxPenetration * 1000.0f,
-                    averageFrameMilliseconds);
+                    maxSpeedMetersPerSecond, maxTiltDegrees, maxCenterY, broadPhaseName, candidatePairCount,
+                    proxyCount, averageFrameMilliseconds);
 
         // The solver configuration the run actually used: quoting smoke numbers
         // without these would make a warm-start / split-impulse comparison meaningless.
@@ -729,8 +914,9 @@ int RunTestbed(const CommandLineOptions& options) {
             static_cast<double>(solverSettings.linearSlop), solverSettings.useSatCache ? 1 : 0,
             static_cast<double>(world.GetGravity().y));
 
-        // 16 bodies / 16 contacts covers the largest current scene (BoxStack: 11 bodies,
-        // 10 contacts) without turning the smoke log into a wall of text.
+        // 16 is a readable sample: the Week 6 stress scenes have 210/400 bodies, and
+        // their verdict is the aggregate line above (counts + penetration + broad-phase
+        // numbers), not another 400 lines of per-body state.
         constexpr int kMaxBodiesPrinted = 16;
         int printedBodyCount = 0;
         for (const p2::Body& body : world.GetBodies()) {

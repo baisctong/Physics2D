@@ -1,11 +1,14 @@
 #include "DebugUI.h"
 
+#include "physics2d/Collision/BroadPhaseBruteForce.h"
+#include "physics2d/Collision/BroadPhaseSAP.h"
 #include "physics2d/Core/World.h"
 
 #include <imgui.h>
 
 #include <algorithm>
 #include <cstdio>
+#include <memory>
 
 namespace p2 {
 namespace {
@@ -65,7 +68,58 @@ constexpr float kMillimetersPerMeter = 1000.0f;
 // Right column x offset: both right-hand panels end `kPanelGap` from the edge.
 constexpr float kRightColumnOffset = kStatusPanelWidth + kPanelGap;
 
+// ---- broad-phase dropdown (Week 6) ------------------------------------------
+// Combo order matches DebugUI::BroadPhaseMode. Auto is the shipped default: main.cpp
+// calls ApplyBroadPhase after every scene build, and it dispatches on the live body
+// count using the bench-measured crossover. The names are also the labels shown in the
+// panel, so the user always sees the real implementation plus the choice that produced
+// it (see the Status panel line).
+constexpr const char* kBroadPhaseModeLabels[] = {"Auto (by body count)", "None (O(N^2) fallback)",
+                                                 "BruteForce", "SAP"};
+constexpr int kBroadPhaseModeCount = 4;
+
 } // namespace
+
+const char* DebugUI::BroadPhaseModeName(BroadPhaseMode mode) noexcept {
+    switch (mode) {
+    case BroadPhaseMode::Auto:
+        return "Auto";
+    case BroadPhaseMode::None:
+        return "None";
+    case BroadPhaseMode::BruteForce:
+        return "BruteForce";
+    case BroadPhaseMode::SAP:
+        return "SAP";
+    }
+    return "Auto";
+}
+
+void DebugUI::ApplyBroadPhase(World& world) {
+    // Every path ends with exactly one implementation installed (or none for None), so
+    // the caller never has to reason about leftover proxies: World::SetBroadPhase
+    // releases the old implementation's proxies and the next Step re-inserts them.
+    switch (m_broadPhaseMode) {
+    case BroadPhaseMode::None:
+        world.SetBroadPhase(nullptr);
+        return;
+    case BroadPhaseMode::BruteForce:
+        world.SetBroadPhase(std::make_unique<BroadPhaseBruteForce>());
+        return;
+    case BroadPhaseMode::SAP:
+        world.SetBroadPhase(std::make_unique<BroadPhaseSAP>());
+        return;
+    case BroadPhaseMode::Auto:
+    default:
+        // Dispatch by scene size (the Week 6 bench crossover): small scenes are cheaper
+        // with the O(N^2) baseline, large scenes need the sweep.
+        if (world.GetBodyCount() >= kBroadPhaseAutoThreshold) {
+            world.SetBroadPhase(std::make_unique<BroadPhaseSAP>());
+        } else {
+            world.SetBroadPhase(std::make_unique<BroadPhaseBruteForce>());
+        }
+        return;
+    }
+}
 
 float DebugUI::GetSpeedMultiplier() const noexcept {
     if (m_speedIndex < 0 || m_speedIndex >= kSpeedCount) {
@@ -180,6 +234,41 @@ void DebugUI::DrawSolverPanel(World& world, DisplayOptions& display, FrameAction
     }
     ImGui::SameLine();
     ImGui::TextDisabled("live");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Broad phase (Week 6)");
+    // The mode is the testbed's policy (Auto dispatches by scene size); the installed
+    // implementation is World's. The combo shows the mode, the lines below show what is
+    // actually running, so an Auto scene never hides its real implementation.
+    int broadPhaseModeIndex = static_cast<int>(m_broadPhaseMode);
+    if (ImGui::Combo("Implementation", &broadPhaseModeIndex, kBroadPhaseModeLabels, kBroadPhaseModeCount)) {
+        // Runtime switch only: World releases the old implementation's proxies and
+        // re-inserts them on the next step. Bodies/contacts are NOT rebuilt, and the
+        // candidate pairs are canonicalised before the narrow phase, so the physics
+        // result must stay identical between implementations (core-dev's equivalence
+        // contract; this panel is the interactive way to observe it).
+        if (broadPhaseModeIndex < 0) {
+            broadPhaseModeIndex = 0;
+        }
+        m_broadPhaseMode = static_cast<BroadPhaseMode>(broadPhaseModeIndex);
+        ApplyBroadPhase(world);
+    }
+    const IBroadPhase* broadPhase = world.GetBroadPhase();
+    ImGui::Text("Installed: %s   mode: %s", broadPhase != nullptr ? broadPhase->Name() : "None",
+                BroadPhaseModeName(m_broadPhaseMode));
+    // Counts describe the last completed Step (the callback runs inside World::Step).
+    ImGui::Text("Proxies: %d   Candidate pairs: %d", broadPhase != nullptr ? broadPhase->GetProxyCount() : 0,
+                world.GetBroadPhasePairCount());
+    if (m_broadPhaseMode == BroadPhaseMode::Auto) {
+        ImGui::TextDisabled("Auto: BruteForce < %d bodies, SAP >= %d (bench crossover)",
+                            kBroadPhaseAutoThreshold, kBroadPhaseAutoThreshold);
+    } else {
+        // A manual pick sticks across scene switches until Auto is chosen again; this line
+        // makes that explicit instead of letting a scene switch silently undo it.
+        ImGui::TextDisabled("Manual override active (%d bodies); pick Auto to re-enable dispatch.",
+                            world.GetBodyCount());
+    }
+    ImGui::TextDisabled("Fat AABB margin %.2f m (kAabbMargin)", static_cast<double>(kAabbMargin));
 
     ImGui::Separator();
     ImGui::TextUnformatted("Iterations (default 8 / 3)");
@@ -456,6 +545,16 @@ void DebugUI::DrawStatusPanel(const World& world, const Demo& currentDemo, const
     ImGui::Separator();
     ImGui::Text("Contacts: %d   Points: %d", touchingContacts, contactPoints);
     ImGui::Text("Max penetration: %.2f mm", maxPenetration * kMillimetersPerMeter);
+
+    // Week 6: which broad phase produced the candidate pairs for the last Step, the
+    // testbed mode that selected it, how many proxies it tracks and how many pairs it
+    // handed to the narrow phase. The fat AABB margin (Settings.h kAabbMargin) is what
+    // makes these counts slightly above the number of actually touching pairs.
+    const IBroadPhase* broadPhase = world.GetBroadPhase();
+    ImGui::Text("Broad phase: %s   mode: %s", broadPhase != nullptr ? broadPhase->Name() : "None",
+                BroadPhaseModeName(m_broadPhaseMode));
+    ImGui::Text("Proxies: %d   Candidate pairs: %d", broadPhase != nullptr ? broadPhase->GetProxyCount() : 0,
+                world.GetBroadPhasePairCount());
 
     ImGui::Separator();
     const Vec2 gravity = world.GetGravity();
