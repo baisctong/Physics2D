@@ -26,6 +26,11 @@ CTest entry `regression_default` (LABEL `regression`) runs
   (seed `20261029`, high 24 bits) — deliberately **no `<random>`**, whose sequence
   is not portable across standard libraries;
 * 51 bodies total, 600 frames.
+* every body is created with `allowSleep = false` on purpose: the regression scene
+  keeps exercising continuous dynamics. Island sleeping has its own tests
+  (`tests/unit/test_world_sleep.cpp`), and island-grouped solving is bit-identical
+  to the flat solve (`Solver/Island.h`), so the Week 7 weak hash must stay
+  `588d30e70f9b4ddd`. A change means the island work altered the physics.
 * Measured on the current solver: 83 contacts at the final frame (informational —
   the counts are folded into the hash, so a lost body/contact is a regression).
 

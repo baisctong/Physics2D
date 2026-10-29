@@ -25,6 +25,13 @@
 //     x in [-6, 6], y in [2, 8].
 //   Bodies = 51. No initial velocity, gravity (0, -10), dt = 1/60 s.
 //
+//   Every body is created with `allowSleep = false`: the regression scene
+//   deliberately keeps exercising continuous dynamics. Island sleeping is covered
+//   by tests/unit/test_world_sleep.cpp, and island grouping / the flat solve are
+//   bit-identical (Solver/Island.h), so the WEEK 7 quantization weak hash must stay
+//   `588d30e70f9b4ddd`. If it changes, the island work altered the physics - that
+//   is a bug to investigate, never a golden update.
+//
 // USAGE / EXIT CODES (test contract, task-5)
 //   physics2d_regression                        print the hash line, exit 0
 //   physics2d_regression --write-golden <path>  write the golden file, exit 0
@@ -103,6 +110,7 @@ void AttachShapeChecked(World& world, BodyHandle body, ShapeHandle shape) {
 void BuildScene(World& world) {
     BodyDef groundDef;
     groundDef.type = BodyType::Static;
+    groundDef.allowSleep = false;
     const BodyHandle ground = world.CreateBody(groundDef);
     AttachShapeChecked(world, ground, world.CreatePlaneShape(Vec2(0.0f, 1.0f), 0.0f));
 
@@ -111,6 +119,7 @@ void BuildScene(World& world) {
         boxDef.type = BodyType::Dynamic;
         boxDef.position = Vec2(0.0f, kBoxHalfExtent + static_cast<float>(index) * 2.0f * kBoxHalfExtent);
         boxDef.density = 1.0f;
+        boxDef.allowSleep = false; // continuous dynamics: see the file header
         const BodyHandle box = world.CreateBody(boxDef);
         AttachShapeChecked(world, box, world.CreateBoxShape(kBoxHalfExtent, kBoxHalfExtent));
     }
@@ -126,6 +135,7 @@ void BuildScene(World& world) {
         circleDef.density = 1.0f;
         circleDef.friction = 0.4f;
         circleDef.restitution = 0.1f;
+        circleDef.allowSleep = false; // continuous dynamics: see the file header
         const BodyHandle circle = world.CreateBody(circleDef);
         AttachShapeChecked(world, circle, world.CreateCircleShape(radius));
     }
