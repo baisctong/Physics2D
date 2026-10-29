@@ -1,11 +1,13 @@
-// Unit tests for p2::ContactSolver — the Week 3 Sequential Impulse normal
-// solver (design document Week 3 D1-D5, prompt P08).
+// Unit tests for p2::ContactSolver — the Sequential Impulse velocity layer
+// (design document Week 3 P08, extended in Week 5 P09: friction, warm starting).
 //
 // The solver is tested directly on hand-built Body/Contact data, not through
 // World: the contracts under test are the impulse formulas (v = J/m,
-// w = Cross(r,J)/I), the effective normal mass, the accumulated-impulse clamp,
-// the restitution bias and the iteration convergence. Every expected number is
-// derived in the comment next to the assertion.
+// w = Cross(r,J)/I), the effective normal/tangent masses, the accumulated-impulse
+// clamp, the restitution bias, the warm-start seeds and the iteration
+// convergence. Every expected number is derived in the comment next to the
+// assertion. The Week 5 friction-cone, warm-start and split-impulse behaviour has
+// its own files (test_solver_*.cpp); this file keeps the velocity-layer basics.
 
 #include <algorithm>
 #include <cmath>
@@ -225,10 +227,10 @@ TEST(ContactSolver, RelativeVelocityIncludesAngularTerms) {
 }
 
 // ---------------------------------------------------------------------------
-// Prepare: levers, normalMass, impulse reset, constraint bookkeeping.
+// Prepare: levers, normal/tangent masses, warm-start seeds (Week 5 contract).
 // ---------------------------------------------------------------------------
 
-TEST(ContactSolver, PrepareComputesLeversNormalMassAndResetsImpulse) {
+TEST(ContactSolver, PrepareComputesLeversMassesAndSeedsWarmStartImpulses) {
     // A: dynamic at (1, 2), m = 2 (invMass 0.5), I = 2 (invInertia 0.5).
     // B: static at the origin.
     std::vector<Body> bodies;
@@ -241,11 +243,15 @@ TEST(ContactSolver, PrepareComputesLeversNormalMassAndResetsImpulse) {
     // localPointB (2, 0) on the static body at the origin: worldB = (2, 0), rB = (2, 0).
     contact.manifold.points[0].localPointA = Vec2{0.5f, -0.25f};
     contact.manifold.points[0].localPointB = Vec2{2.0f, 0.0f};
-    // A stale accumulated impulse from a previous frame must be reset.
-    contact.manifold.points[0].normalImpulse = 42.0f;
+    // Week 5: World inherits last frame's accumulated impulses for a persistent
+    // contact (matched by ContactID::Key), so this pair carries non-zero values.
+    contact.isPersistent = true;
+    contact.manifold.points[0].normalImpulse = 8.0f;
+    contact.manifold.points[0].tangentImpulse = 2.0f;
     std::vector<Contact> contacts{contact};
 
-    SolverSettings settings;
+    SolverSettings settings; // warm starting on; factor set explicitly for the hand numbers
+    settings.warmStartFactor = 0.5f;
     ContactSolver solver;
     solver.Prepare(bodies, contacts, settings);
 
@@ -259,14 +265,55 @@ TEST(ContactSolver, PrepareComputesLeversNormalMassAndResetsImpulse) {
     EXPECT_NEAR(constraint.rB.y, 0.0f, kTolerance);
     EXPECT_FLOAT_EQ(constraint.normal.x, 1.0f);
     EXPECT_FLOAT_EQ(constraint.normal.y, 0.0f);
+    // Week 5: t = Skew(n) = (-n.y, n.x) = (0, 1).
+    EXPECT_FLOAT_EQ(constraint.tangent.x, 0.0f);
+    EXPECT_FLOAT_EQ(constraint.tangent.y, 1.0f);
 
-    // K = invMassA + invMassB + invIA*Cross(rA,n)^2 + invIB*Cross(rB,n)^2
+    // K_n = invMassA + invMassB + invIA*Cross(rA,n)^2 + invIB*Cross(rB,n)^2
     //   Cross((0.5, -0.25), (1, 0)) = 0.5*0 - (-0.25)*1 = 0.25 -> squared 0.0625
-    //   K = 0.5 + 0 + 0.5*0.0625 + 0 = 0.53125 = 17/32
-    //   normalMass = 1/K = 32/17 = 1.88235294...
+    //   K_n = 0.5 + 0 + 0.5*0.0625 + 0 = 0.53125 = 17/32
+    //   normalMass = 1/K_n = 32/17 = 1.88235294...
     EXPECT_NEAR(constraint.normalMass, 32.0f / 17.0f, 1.0e-5f);
-    EXPECT_FLOAT_EQ(constraint.accumulatedImpulse, 0.0f);
-    EXPECT_FLOAT_EQ(contacts[0].manifold.points[0].normalImpulse, 0.0f);
+
+    // K_t with t = (0, 1):
+    //   Cross((0.5, -0.25), (0, 1)) = 0.5*1 - (-0.25)*0 = 0.5 -> squared 0.25
+    //   Cross((2, 0), (0, 1)) = 2*1 - 0*0 = 2 -> squared 4, but invIB = 0
+    //   K_t = 0.5 + 0 + 0.5*0.25 + 0 = 0.625 = 5/8
+    //   tangentMass = 1/K_t = 8/5 = 1.6
+    EXPECT_NEAR(constraint.tangentMass, 1.6f, kTolerance);
+
+    // Week 5 warm-start seeds: inherited * warmStartFactor = 8*0.5 and 2*0.5.
+    // (The shipped default factor is 1.0 = full inheritance; the factor is set to
+    // 0.5 here to pin the scaling arithmetic.)
+    EXPECT_NEAR(constraint.accumulatedImpulse, 4.0f, kTolerance);
+    EXPECT_NEAR(constraint.accumulatedTangentImpulse, 1.0f, kTolerance);
+    // Prepare must NOT clobber the persistent storage: writing it back is
+    // SolveVelocity's job, after the iterations have produced this frame's value.
+    EXPECT_FLOAT_EQ(contacts[0].manifold.points[0].normalImpulse, 8.0f);
+    EXPECT_FLOAT_EQ(contacts[0].manifold.points[0].tangentImpulse, 2.0f);
+
+    // A non-persistent point starts at exactly zero even if a stale impulse is
+    // still sitting in the ContactPoint: World only inherits matched points, and
+    // the solver must never resurrect stale data for an unmatched feature.
+    std::vector<Contact> coldContacts{contact};
+    coldContacts[0].isPersistent = false;
+    coldContacts[0].manifold.points[0].normalImpulse = 42.0f;
+    coldContacts[0].manifold.points[0].tangentImpulse = 9.0f;
+    ContactSolver coldSolver;
+    coldSolver.Prepare(bodies, coldContacts, settings);
+    ASSERT_EQ(coldSolver.GetConstraintCount(), 1);
+    EXPECT_FLOAT_EQ(coldSolver.GetConstraints()[0].accumulatedImpulse, 0.0f);
+    EXPECT_FLOAT_EQ(coldSolver.GetConstraints()[0].accumulatedTangentImpulse, 0.0f);
+
+    // useWarmStarting = false must force zero seeds even for a persistent pair
+    // (this is the W4-behaviour baseline, not a second code path).
+    SolverSettings noWarmSettings;
+    noWarmSettings.useWarmStarting = false;
+    ContactSolver noWarmSolver;
+    noWarmSolver.Prepare(bodies, contacts, noWarmSettings);
+    ASSERT_EQ(noWarmSolver.GetConstraintCount(), 1);
+    EXPECT_FLOAT_EQ(noWarmSolver.GetConstraints()[0].accumulatedImpulse, 0.0f);
+    EXPECT_FLOAT_EQ(noWarmSolver.GetConstraints()[0].accumulatedTangentImpulse, 0.0f);
 }
 
 TEST(ContactSolver, PrepareBuildsOneConstraintPerManifoldPoint) {
@@ -520,43 +567,102 @@ TEST(ContactSolver, IterationsReduceResidualNormalVelocity) {
 }
 
 // ---------------------------------------------------------------------------
-// Warm start (Week 3: no-op) and bookkeeping edge cases.
+// Warm start (Week 5) and bookkeeping edge cases.
 // ---------------------------------------------------------------------------
 
-TEST(ContactSolver, WarmStartIsANoOpInWeek3) {
-    // P08 explicitly starts without warm starting. WarmStart must not apply the
-    // stale ContactPoint impulse; Week 5 will replace this no-op.
+TEST(ContactSolver, WarmStartAppliesTheSeededImpulsesExactlyOnce) {
+    // Week 5 replaces the Week 3 no-op: WarmStart applies the seeded accumulated
+    // impulses (already scaled by warmStartFactor in Prepare) once, with the same
+    // -J/+J rule the iterations use.
+    //
+    // Geometry: A dynamic at the origin (m = 2 -> invMass 0.5, I = 4 ->
+    // invInertia 0.25), B static at the origin, shared anchor at world (1, 2), so
+    // rA = rB = (1, 2). normal = (0, 1) (A -> B), t = Skew(n) = (-1, 0).
     std::vector<Body> bodies;
-    bodies.push_back(MakeDynamic(0, Vec2{-0.5f, 0.0f}, Vec2{1.0f, 0.0f}));
-    bodies.push_back(MakeStatic(1, Vec2{0.5f, 0.0f}));
-    std::vector<Contact> contacts{MakeCentralContact(bodies[0].handle, bodies[1].handle, Vec2{1.0f, 0.0f})};
-    contacts[0].manifold.points[0].normalImpulse = 5.0f;
+    bodies.push_back(MakeDynamic(0, Vec2{0.0f, 0.0f}, Vec2{0.0f, 0.0f}, 0.0f, 2.0f, 4.0f));
+    bodies.push_back(MakeStatic(1, Vec2{0.0f, 0.0f}));
+    Contact contact = MakeCentralContact(bodies[0].handle, bodies[1].handle, Vec2{0.0f, 1.0f});
+    contact.manifold.points[0].localPointA = Vec2{1.0f, 2.0f};
+    contact.manifold.points[0].localPointB = Vec2{1.0f, 2.0f};
+    contact.isPersistent = true;
+    contact.manifold.points[0].normalImpulse = 4.0f;
+    contact.manifold.points[0].tangentImpulse = -2.0f;
+    std::vector<Contact> contacts{contact};
+
     SolverSettings settings;
+    settings.warmStartFactor = 0.5f; // seeds: accN = 2, accT = -1
     ContactSolver solver;
+    solver.Prepare(bodies, contacts, settings);
+    ASSERT_EQ(solver.GetConstraintCount(), 1);
+    EXPECT_NEAR(solver.GetConstraints()[0].accumulatedImpulse, 2.0f, kTolerance);
+    EXPECT_NEAR(solver.GetConstraints()[0].accumulatedTangentImpulse, -1.0f, kTolerance);
+
     solver.WarmStart(bodies, contacts, settings);
 
-    EXPECT_FLOAT_EQ(bodies[0].linearVelocity.x, 1.0f);
-    EXPECT_FLOAT_EQ(bodies[0].linearVelocity.y, 0.0f);
-    EXPECT_FLOAT_EQ(bodies[0].angularVelocity, 0.0f);
+    // J = n*accN + t*accT = (0,2) + (-1,0)*(-1) = (1, 2).
+    // A receives -J: v = -J/m = (-0.5, -1); w = -Cross(rA, J)/I = 0 because rA is
+    // parallel to J (Cross((1,2),(1,2)) == 0), so there is no angular response.
+    EXPECT_NEAR(bodies[0].linearVelocity.x, -0.5f, kTolerance);
+    EXPECT_NEAR(bodies[0].linearVelocity.y, -1.0f, kTolerance);
+    EXPECT_NEAR(bodies[0].angularVelocity, 0.0f, kTolerance);
+    // Static B ignores the impulse entirely.
+    EXPECT_FLOAT_EQ(bodies[1].linearVelocity.x, 0.0f);
+    EXPECT_FLOAT_EQ(bodies[1].linearVelocity.y, 0.0f);
+    // The cached accumulator is still the seed (WarmStart applies, it does not
+    // re-scale), so a second solve starts from exactly the applied impulse.
+    EXPECT_NEAR(solver.GetConstraints()[0].accumulatedImpulse, 2.0f, kTolerance);
+
+    // Disabled warm starting: the seeds are zero, so WarmStart is a clean no-op.
+    std::vector<Body> coldBodies;
+    coldBodies.push_back(MakeDynamic(0, Vec2{0.0f, 0.0f}, Vec2{0.0f, 0.0f}, 0.0f, 2.0f, 4.0f));
+    coldBodies.push_back(MakeStatic(1, Vec2{0.0f, 0.0f}));
+    std::vector<Contact> coldContacts{contact};
+    SolverSettings coldSettings;
+    coldSettings.useWarmStarting = false;
+    ContactSolver coldSolver;
+    coldSolver.Prepare(coldBodies, coldContacts, coldSettings);
+    coldSolver.WarmStart(coldBodies, coldContacts, coldSettings);
+    EXPECT_FLOAT_EQ(coldBodies[0].linearVelocity.x, 0.0f);
+    EXPECT_FLOAT_EQ(coldBodies[0].linearVelocity.y, 0.0f);
+    EXPECT_FLOAT_EQ(coldBodies[0].angularVelocity, 0.0f);
 }
 
-TEST(ContactSolver, NonPositiveIterationsStillWriteBackZeroImpulses) {
+TEST(ContactSolver, ZeroIterationsWritesBackTheWarmStartSeed) {
     std::vector<Body> bodies;
     bodies.push_back(MakeDynamic(0, Vec2{-0.5f, 0.0f}, Vec2{2.0f, 0.0f}));
     bodies.push_back(MakeStatic(1, Vec2{0.5f, 0.0f}));
-    std::vector<Contact> contacts{MakeCentralContact(bodies[0].handle, bodies[1].handle, Vec2{1.0f, 0.0f})};
-    contacts[0].manifold.points[0].normalImpulse = 7.0f; // stale value from a caller
+    Contact contact = MakeCentralContact(bodies[0].handle, bodies[1].handle, Vec2{1.0f, 0.0f});
+    contact.manifold.points[0].normalImpulse = 7.0f; // stale value from a caller
+    contact.isPersistent = false;
+    std::vector<Contact> contacts{contact};
+
     SolverSettings settings;
+    settings.warmStartFactor = 0.5f;
     ContactSolver solver;
     solver.Prepare(bodies, contacts, settings);
 
-    // Prepare resets the persistent impulse; a zero- or negative-iteration solve
-    // must still leave the field at zero and apply no velocity change.
-    EXPECT_FLOAT_EQ(contacts[0].manifold.points[0].normalImpulse, 0.0f);
+    // Week 5: Prepare no longer resets the field, but a non-persistent pair must
+    // not use the stale value - the accumulator starts at zero and a zero- or
+    // negative-iteration solve writes that back.
+    EXPECT_FLOAT_EQ(solver.GetConstraints()[0].accumulatedImpulse, 0.0f);
+    EXPECT_FLOAT_EQ(contacts[0].manifold.points[0].normalImpulse, 7.0f);
     solver.SolveVelocity(bodies, contacts, 0, settings);
     solver.SolveVelocity(bodies, contacts, -3, settings);
     EXPECT_FLOAT_EQ(contacts[0].manifold.points[0].normalImpulse, 0.0f);
+    EXPECT_FLOAT_EQ(contacts[0].manifold.points[0].tangentImpulse, 0.0f);
     EXPECT_FLOAT_EQ(bodies[0].linearVelocity.x, 2.0f);
+
+    // Persistent pair: the applied (warm-start) impulse is 7*0.5 = 3.5, so the
+    // write-back must be 3.5 - not 7 and not 3.5*0.5. This is the invariant that
+    // keeps the cached accumulator and the applied impulse from diverging.
+    std::vector<Contact> persistentContacts{contact};
+    persistentContacts[0].isPersistent = true;
+    ContactSolver persistentSolver;
+    persistentSolver.Prepare(bodies, persistentContacts, settings);
+    ASSERT_EQ(persistentSolver.GetConstraintCount(), 1);
+    EXPECT_NEAR(persistentSolver.GetConstraints()[0].accumulatedImpulse, 3.5f, kTolerance);
+    persistentSolver.SolveVelocity(bodies, persistentContacts, 0, settings);
+    EXPECT_NEAR(persistentContacts[0].manifold.points[0].normalImpulse, 3.5f, kTolerance);
 }
 
 // ---------------------------------------------------------------------------

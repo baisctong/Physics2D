@@ -186,8 +186,9 @@ TEST(WorldSatTest, BoxOnGroundRestsOnTwoContactPoints) {
     EXPECT_LE(contact.manifold.penetration, p2::kLinearSlop * 2.0f);
     EXPECT_LT(std::fabs(world.GetLinearVelocity(box).y), 0.02f);
 
-    // Position drift over the last second is bounded (the temporary position
-    // push-out still jitters slightly; Week 5's split impulse tightens this).
+    // Position drift over the last second is bounded: the split-impulse position
+    // layer corrects only the overlap above the slop band, so the resting height
+    // is a constant (Week 5 replaced the Week 2-4 TEMPORARY push-out).
     const float heightAtFourSeconds = world.GetPosition(box).y;
     StepFor(world, 60);
     const float heightAtFiveSeconds = world.GetPosition(box).y;
@@ -253,9 +254,10 @@ TEST(WorldSatTest, TwoBoxStackStaysStackedWithEnoughIterations) {
     const BodyHandle lower = AddBox(world, Vec2(0.0f, 0.5f), 0.5f, 0.5f);
     const BodyHandle upper = AddBox(world, Vec2(0.0f, 1.5f), 0.5f, 0.5f);
 
-    // 40 velocity iterations re-converge the two-box stack every frame (measured:
-    // gap 1.00000, angles 0 at step 600). With the deferred Week 5 warm start the
-    // same scene will hold at the default 8 iterations.
+    // Week 4 needed 40 velocity iterations to re-converge this two-box stack every
+    // frame (no warm starting, no friction). Week 5 holds it at the default 8
+    // iterations (covered by the ten-box milestone test); this test stays at 40 on
+    // purpose as the high-iteration convergence check of the same scene.
     for (int32_t step = 0; step < 600; ++step) {
         world.Step(kDt, kStableTwoBoxIterations, 3);
     }
@@ -265,13 +267,24 @@ TEST(WorldSatTest, TwoBoxStackStaysStackedWithEnoughIterations) {
     EXPECT_GE(world.GetContactCount(), 2);
     EXPECT_TRUE(IsFiniteBody(world, lower));
     EXPECT_TRUE(IsFiniteBody(world, upper));
-    // The upper box sits exactly one box height above the lower one, with no
-    // lateral drift and no residual rotation (measured: gap 1.00000, x = 0,
-    // angle = 0 at step 600).
+    // Week 5 tolerance change (physics reason, not a relaxed error bound): the
+    // split-impulse position layer deliberately leaves contacts inside the
+    // kLinearSlop = 0.005 m penetration band instead of forcing exact separation.
+    // The Week 2-4 TEMPORARY push-out reached gap 1.00000 only by teleporting the
+    // boxes apart, which injected potential energy at every contact. With split
+    // impulse the resting state is penetration <= slop per contact, so the resting
+    // gap is in [1 - slop, 1] and the lower box centre in [0.5 - slop, 0.5].
+    // Measured with the Week 5 solver at step 600: gap = 0.9966 m, lower y =
+    // 0.4961 m (both inside the slop band), x = 0, angle = 0.
     const Vec2 lowerPosition = world.GetPosition(lower);
     const Vec2 upperPosition = world.GetPosition(upper);
-    EXPECT_NEAR(upperPosition.y - lowerPosition.y, 1.0f, 1.0e-3f);
-    EXPECT_NEAR(lowerPosition.y, 0.5f, 1.0e-3f);
+    std::printf("[world5] two-box stack (40 iterations, 600 steps): gap = %.5f m, lower y = %.5f m, "
+                "lower x = %+.6f, upper x = %+.6f, angles = %+.6f / %+.6f rad\n",
+                static_cast<double>(upperPosition.y - lowerPosition.y), static_cast<double>(lowerPosition.y),
+                static_cast<double>(lowerPosition.x), static_cast<double>(upperPosition.x),
+                static_cast<double>(world.GetAngle(lower)), static_cast<double>(world.GetAngle(upper)));
+    EXPECT_NEAR(upperPosition.y - lowerPosition.y, 1.0f, p2::kLinearSlop);
+    EXPECT_NEAR(lowerPosition.y, 0.5f, p2::kLinearSlop);
     EXPECT_LT(std::fabs(lowerPosition.x), 1.0e-3f);
     EXPECT_LT(std::fabs(upperPosition.x), 1.0e-3f);
     EXPECT_LT(std::fabs(world.GetAngle(lower)), 1.0e-2f);
@@ -279,15 +292,30 @@ TEST(WorldSatTest, TwoBoxStackStaysStackedWithEnoughIterations) {
 }
 
 TEST(WorldSatTest, TenBoxStackHeadlessDefaultIterations) {
-    // D7 honest Week 4 baseline: ten 1 m boxes on a static plane at the DEFAULT 8
-    // velocity iterations. This test deliberately does NOT assert that the tower
-    // stands: with zero friction (friction lands W5) a multi-box tower is
-    // physically unstable - the tiny per-frame PGS torque bias tilts the boxes, and
-    // nothing damps the resulting lateral drift. Raising the iteration count only
-    // delays the collapse; the Lead's probe measured N=2 stable at 40 iterations,
-    // N=5 at ~80, and N=10 collapsing at every tested count.
-    // What remains a hard contract: no NaN, no tunnelling through the ground, the
-    // final resting penetration is in the slop band, and positions stay sane.
+    // Week 4 historical baseline (kept for the before/after record - see the
+    // Week 4 devlog and README): with zero friction and no warm starting, the ten
+    // 1 m boxes on a static plane at the DEFAULT 8 velocity iterations collapsed.
+    // Measured then: collapse step ~= 138 (top box fell below y = 5 m) and peak
+    // penetration during the collapse transient 0.1413 m. Raising the iteration
+    // count only delayed it (N=2 stable at 40, N=5 at ~80, N=10 at none).
+    //
+    // Week 5 changes the EXPECTATION because the physics mechanism changed, not
+    // because the thresholds were relaxed:
+    //   - Coulomb friction (combined mu = 0.3) damps the lateral drift that the
+    //     per-frame PGS torque bias used to amplify - that was the W4 root cause;
+    //   - warm starting seeds each frame with last frame's accumulated impulse, so
+    //     the default 8 iterations start from the previous solution instead of
+    //     re-converging from zero every frame (the measured full seed, factor 1.0,
+    //     is what keeps a 10-box tower upright; see Settings.h kWarmStartFactor);
+    //   - the split-impulse position layer removes residual penetration without
+    //     injecting energy into the real velocities (it replaces the Week 2
+    //     push-out).
+    // The iteration count is deliberately NOT raised: the milestone is that the
+    // default 8 velocity / 3 position iterations are enough (HANDOFF section 5.1).
+    // W5 contract asserted below: max penetration < 0.01 m, top box at y ~= 9.5 m,
+    // per-box tilt/lateral drift bounded, no NaN. W5 measured values (printed):
+    // no collapse, max penetration 0.00522 m, top y 9.47813 m, max tilt 0.00460
+    // rad, max |x| over run 0.03063 m, final state all finite.
     World world;
     AddGroundPlane(world);
     std::vector<BodyHandle> boxes;
@@ -296,32 +324,45 @@ TEST(WorldSatTest, TenBoxStackHeadlessDefaultIterations) {
     }
 
     float maxPenetrationOverRun = 0.0f;
-    int32_t collapseStep = -1;
+    float maxTiltOverRun = 0.0f;
+    float maxLateralOverRun = 0.0f;
+    int32_t collapseStep = -1; // same probe as the Week 4 baseline: top y < 5 m
     for (int32_t step = 0; step < 600; ++step) {
-        world.Step(kDt);
+        world.Step(kDt); // stored defaults: 8 velocity / 3 position iterations
         maxPenetrationOverRun = std::max(maxPenetrationOverRun, MaxPenetration(world));
         if (collapseStep < 0 && world.GetPosition(boxes.back()).y < 5.0f) {
             collapseStep = step;
         }
-    }
-    // Final resting state: after the tower topples the boxes spill onto the ground
-    // and rest in the slop band. The peak penetration DURING the collapse transient
-    // (measured 0.1413 m) is reported as data below; only the final frame is held
-    // to the two-slop contract.
-    EXPECT_LE(MaxPenetration(world), p2::kLinearSlop * 2.0f);
-    for (BodyHandle box : boxes) {
-        EXPECT_TRUE(IsFiniteBody(world, box));
-        EXPECT_GT(world.GetPosition(box).y, -0.5f); // no tunnelling below the ground
-        // No friction in Week 4 means the spilled boxes keep sliding sideways; the
-        // envelope catches NaN/explosions, not a resting-position contract.
-        EXPECT_LT(std::fabs(world.GetPosition(box).x), 100.0f);
-        EXPECT_LT(world.GetPosition(box).y, 12.0f);
+        for (const BodyHandle box : boxes) {
+            maxTiltOverRun = std::max(maxTiltOverRun, std::fabs(world.GetAngle(box)));
+            maxLateralOverRun = std::max(maxLateralOverRun, std::fabs(world.GetPosition(box).x));
+        }
     }
 
-    std::printf("[BoxStack10/default 8] collapse step = %d, max penetration over run = %.5f m\n",
-                collapseStep, static_cast<double>(maxPenetrationOverRun));
+    // The tower still stands after 10 simulated seconds: no collapse, the top box
+    // is one storey above the ninth (0.5 + 9 * 1.0 = 9.5 m), and every box keeps
+    // its slot in the stack.
+    EXPECT_EQ(collapseStep, -1);
+    EXPECT_LT(maxPenetrationOverRun, 0.01f); // HANDOFF 5.1 milestone
+    EXPECT_NEAR(world.GetPosition(boxes.back()).y, 9.5f, 0.05f);
+    EXPECT_LT(maxTiltOverRun, 0.05f);      // rad: visually upright
+    EXPECT_LT(maxLateralOverRun, 0.05f);   // m: no sideways wander
+    EXPECT_GE(world.GetContactCount(), 9); // ground + 8..9 box-box pairs must touch
+    EXPECT_LE(MaxPenetration(world), p2::kLinearSlop * 2.0f);
     for (std::size_t index = 0; index < boxes.size(); ++index) {
-        std::printf("[BoxStack10/default 8] box %zu: x = %.4f, y = %.4f, angle = %.4f rad\n", index,
+        EXPECT_TRUE(IsFiniteBody(world, boxes[index]));
+        const Vec2 position = world.GetPosition(boxes[index]);
+        EXPECT_NEAR(position.y, 0.5f + static_cast<float>(index), 0.05f);
+        EXPECT_LT(std::fabs(position.x), 0.05f);
+        EXPECT_LT(std::fabs(world.GetAngle(boxes[index])), 0.05f);
+    }
+
+    std::printf("[BoxStack10/W5 default 8] collapse step = %d, max penetration over run = %.5f m, "
+                "max tilt = %.5f rad, max |x| = %.5f m\n",
+                collapseStep, static_cast<double>(maxPenetrationOverRun), static_cast<double>(maxTiltOverRun),
+                static_cast<double>(maxLateralOverRun));
+    for (std::size_t index = 0; index < boxes.size(); ++index) {
+        std::printf("[BoxStack10/W5 default 8] box %zu: x = %+.5f, y = %.5f, angle = %+.5f rad\n", index,
                     static_cast<double>(world.GetPosition(boxes[index]).x),
                     static_cast<double>(world.GetPosition(boxes[index]).y),
                     static_cast<double>(world.GetAngle(boxes[index])));

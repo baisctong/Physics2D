@@ -1,6 +1,6 @@
 // Week 3 D6/P08: integration tests for the Sequential Impulse solver wired into
 // World::Step (phases: UpdateContacts -> PrepareConstraints -> WarmStart ->
-// SolveVelocityConstraints -> IntegratePositions -> position push-out).
+// SolveVelocityConstraints -> IntegratePositions -> split-impulse position layer).
 //
 // The tests use only the public World/Body API so they pin the observable
 // physical contract, not the solver internals:
@@ -148,9 +148,11 @@ TEST(WorldImpulseTest, MassRatioCollisionConservesMomentumAndLosesEnergy) {
 TEST(WorldImpulseTest, BallSettlesOnGroundWithSlopPenetration) {
     // With the velocity solver, the resting state is:
     //   phase 1 adds -g*dt to v; phase 6 drives the normal velocity to 0;
-    //   phase 7 integrates (no motion); phase 8 pushes out (pen - kLinearSlop).
-    // The fixed point is penetration = kLinearSlop = 0.005 m exactly (better than
-    // Week 2's slop + g*dt^2 = 0.00778 m), and the position is constant.
+    //   phase 7 integrates (no motion); phase 8 removes the overlap above the
+    //   slop band with the split-impulse pseudo-velocity layer (beta per step).
+    // The fixed point of that correction is penetration = kLinearSlop = 0.005 m
+    // exactly (better than Week 2's slop + g*dt^2 = 0.00778 m), and the position
+    // is constant.
     World world;
     const BodyHandle ground = AddGround(world);
     const BodyHandle ball = AddCircle(world, Vec2(0.0f, 3.0f), 1.0f);
@@ -270,15 +272,18 @@ TEST(WorldImpulseTest, RestitutionPointEightReboundsNearTheAnalyticPeak) {
     //     0.5 + 0.64 * 4.5 = 3.38 m  (the task's "0.64 * 5 = 3.2 m" ignores the
     //     0.5 m contact offset).
     //
-    // Week 3 measures ~3.5 m instead, for two unavoidable discrete-time reasons:
-    //   1) semi-implicit Euler's velocity is one gravity step ahead of the
-    //      position, so the impact speed is ~g*dt = 0.17 m/s high (+2% -> +4% apex);
-    //   2) the TEMPORARY position push-out (replaced by split impulse in Week 5)
-    //      lifts the ball by (penetration - kLinearSlop) before the rebound,
-    //      adding ~0.1 m of potential energy that week 2's hack did not remove.
-    // The test therefore pins the fundamental contract (rebound/impact ratio = e
-    // and a bounded, sub-drop apex) and accepts 3.0-3.6 m for the apex; Week 5
-    // should tighten it back to the analytic band.
+    // Week 5 measures apex 3.4633 m (impact 9.5000 m/s before the contact frame,
+    // rebound 7.7333 m/s, ratio 0.8140). The remaining gap above the analytic
+    // apex is the discrete-time impact-velocity bias, not position-layer energy
+    // injection: the restitution bias is captured in Prepare after the gravity
+    // step, so the rebound target is e * (impact + g*dt) = 0.8 * 9.667 = 7.733
+    // m/s, and sqrt(2) discretisation of the apex costs another ~0.02 m. The
+    // split-impulse position layer never writes into the real velocity (pinned by
+    // SplitImpulseDoesNotInjectEnergyIntoRealVelocities in test_world_stability);
+    // Week 3's TEMPORARY push-out, which lifted the ball before the rebound and
+    // added up to (penetration - slop) of potential energy, is gone.
+    // The test pins the fundamental contract (rebound/impact ratio = e and a
+    // bounded, sub-drop apex) with the 3.0-3.6 m band.
     World world;
     AddGround(world);
     const BodyHandle ball = AddCircle(world, Vec2(0.0f, 5.0f), 1.0f, 0.8f);
@@ -301,6 +306,11 @@ TEST(WorldImpulseTest, RestitutionPointEightReboundsNearTheAnalyticPeak) {
         }
     }
     EXPECT_TRUE(contactSeen);
+    std::printf("[world5] restitution 0.8: impact speed = %.4f m/s, rebound speed = %.4f m/s, "
+                "rebound/impact = %.4f, apex = %.4f m (analytic 3.38 m)\n",
+                static_cast<double>(impactSpeed), static_cast<double>(maxUpwardVelocity),
+                static_cast<double>(maxUpwardVelocity / impactSpeed),
+                static_cast<double>(peakHeightAfterContact));
     EXPECT_GT(impactSpeed, 9.0f);
     EXPECT_GT(maxUpwardVelocity, 5.0f); // clear rebound, not a positional artefact
     // Restitution semantics: rebound / impact speed == e (to within discrete error).

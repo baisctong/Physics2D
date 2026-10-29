@@ -176,9 +176,9 @@ TEST(WorldContactTest, ContactPersistsWithStableKeyAcrossFrames) {
     const uint16_t firstKey = world.GetContacts()[0].manifold.points[0].id.Key();
 
     // The contact persists from frame to frame: the solver removes the approach
-    // velocity and the position push-out settles the ball in the slop band
-    // (penetration ~ kLinearSlop = 0.005 m), so the same physical contact point
-    // must produce the same ContactID::Key() on the second step.
+    // velocity and the split-impulse position layer settles the ball in the slop
+    // band (penetration ~ kLinearSlop = 0.005 m), so the same physical contact
+    // point must produce the same ContactID::Key() on the second step.
     world.Step(kDt);
     ASSERT_EQ(world.GetContactCount(), 1);
     const Contact& second = world.GetContacts()[0];

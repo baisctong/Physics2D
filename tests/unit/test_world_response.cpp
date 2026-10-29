@@ -175,13 +175,12 @@ TEST(WorldResponseTest, LowSpeedContactIsAbsorbedWithoutBounce) {
     // Restitution threshold contract (Section 6.4): an approach slower than
     // kRestitutionVelocityThreshold (1 m/s) must be absorbed, not bounced.
     //
-    // Week 3 note: the old 900-step "bounces decay to a full stop" expectation no
-    // longer holds, and that is expected. The TEMPORARY position push-out (still
-    // active until Week 5's split impulse) lifts the ball by up to
-    // (penetration - slop) on every impact, injecting a small amount of potential
-    // energy; repeated bounces therefore settle into a low-speed limit cycle
-    // (~0.9 m/s) instead of a hard stop. The velocity-level threshold contract
-    // itself is exact and is what this test pins: a slow contact is absorbed.
+    // Week 3 measured a low-speed limit cycle (~0.9 m/s) instead of a hard stop
+    // because the TEMPORARY position push-out lifted the ball by up to
+    // (penetration - slop) on every impact. Week 5 removed that hack: the
+    // split-impulse position layer corrects overlap without touching the real
+    // velocity, so the velocity-level threshold contract is all that remains to
+    // pin here: a slow contact is absorbed.
     World world;
     BodyDef groundDef;
     groundDef.type = BodyType::Static;
