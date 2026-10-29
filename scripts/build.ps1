@@ -200,7 +200,36 @@ try {
     # ------------------------------------------------------------------
     Write-Host "[build] build" -ForegroundColor Cyan
     $buildArgs = @('--build', $buildPath)
-    if ($Clean) { $buildArgs += '--clean-first' }
+
+    # Stale-object guard (Windows only, see docs/dev-setup.md section 6).
+    # Ninja's depfile is EMPTY on this machine because the localized
+    # /showIncludes prefix never matches CMake's UTF-8 copy, so editing a header
+    # does not trigger a recompile. Mixing objects compiled against different
+    # header layouts corrupts the heap (changed class size -> mismatched
+    # new/delete), which is exactly the "HEAP CORRUPTION DETECTED" crash seen in
+    # Week 7. Rather than trusting the user to remember -Clean, detect it: if any
+    # header in the repository is newer than the newest object file in this build
+    # directory, force a clean-first build. This costs one rebuild only when it
+    # matters and makes an incremental run as trustworthy as a clean one.
+    if ($isWindows -and -not $Clean) {
+        $newestHeader = Get-ChildItem -Path (Join-Path $repoRoot 'include'), (Join-Path $repoRoot 'testbed'),
+                (Join-Path $repoRoot 'tests'), (Join-Path $repoRoot 'bench') `
+            -Recurse -Filter '*.h' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $newestObject = Get-ChildItem -Path $buildPath -Recurse -Include '*.obj', '*.o' -File `
+            -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($null -ne $newestHeader -and $null -ne $newestObject -and
+            $newestHeader.LastWriteTime -gt $newestObject.LastWriteTime) {
+            Write-Host ("[build] WARNING: header '{0}' is newer than the newest object file; " -f
+                $newestHeader.Name) -ForegroundColor Yellow
+            Write-Host ("[build]   forcing a clean-first rebuild (localized /showIncludes makes " +
+                "Ninja header dependencies empty - docs/dev-setup.md section 6)") -ForegroundColor Yellow
+            $buildArgs += '--clean-first'
+        }
+    } elseif ($Clean) {
+        $buildArgs += '--clean-first'
+    }
     if ($Target) { $buildArgs += @('--target', $Target) }
     if ($Jobs -gt 0) { $buildArgs += @('--parallel', $Jobs) }
     & cmake @buildArgs
