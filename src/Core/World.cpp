@@ -1,10 +1,11 @@
 // p2::World — body/shape ownership and the fixed simulation pipeline
-// (Section 4.6). Week 3 wires the Sequential Impulse solver in: UpdateContacts
-// (phase 3) produces the manifolds, PrepareConstraints precomputes the per-point
-// effective masses and restitution bias, and SolveVelocityConstraints (phase 6)
-// runs the iterations. The Week 2 temporary normal-velocity projection is gone;
-// only the position-level push-out in phase 8 remains as a Week 5 placeholder
-// (split impulse replaces it).
+// (Section 4.6). Week 5 completes the solver wiring: UpdateContacts (phase 3)
+// produces the manifolds and inherits the per-point accumulated impulses,
+// PrepareConstraints caches the normal/tangent effective masses plus the
+// restitution/Baumgarte bias, WarmStart (phase 5) applies the inherited impulses,
+// SolveVelocityConstraints (phase 6) runs normal + friction iterations, and
+// SolvePositionConstraints (phase 8) runs the split-impulse pseudo-velocity
+// layer. The Week 2 temporary position push-out is gone.
 // See World.h for the frozen pipeline and API contracts.
 //
 // Scale note: pair enumeration is O(N^2) with an AABB pre-filter on purpose.
@@ -552,9 +553,9 @@ void World::Step(float dt, int32_t velocityIterations, int32_t positionIteration
     }
 
     // Store the per-call iteration override. The velocity count is consumed by
-    // the Sequential Impulse iterations (phase 6) and the position count will be
-    // consumed by split-impulse position iterations in Week 5. Step(dt) passes
-    // the stored SolverSettings defaults through this same path.
+    // the Sequential Impulse iterations (phase 6) and the position count by the
+    // split-impulse pseudo-velocity iterations (phase 8). Step(dt) passes the
+    // stored SolverSettings defaults through this same path.
     assert(velocityIterations >= 0 && positionIterations >= 0 &&
            "World::Step: iteration counts must be non-negative");
     m_activeVelocityIterations = velocityIterations;
@@ -562,18 +563,18 @@ void World::Step(float dt, int32_t velocityIterations, int32_t positionIteration
 
     // Section 4.6 pipeline: the ORDER is normative. When filling the reserved
     // phases in later weeks, do not move a call - only replace its body.
-    IntegrateForces(dt);        //  1. force/gravity -> velocity            [done]
-    UpdateBroadPhase(dt);       //  2. broad phase update                   [reserved Week 6]
-    UpdateContacts();           //  3. narrow phase / contact generation     [done W2, O(N^2)]
-    BuildIslands();             //  4. island construction                  [reserved Week 7]
-    PrepareConstraints();       //     solver cache (pure precompute; not a state phase)
-    WarmStart();                //  5. warm start                           [reserved W5, no-op]
-    SolveVelocityConstraints(); //  6. sequential impulses (normal only)     [done W3]
-    IntegratePositions(dt);     //  7. velocity -> position (semi-implicit) [done]
-    SolvePositionConstraints(); //  8. residual penetration push-out         [W2 placeholder, W5]
-    Synchronize();              //  9. transform/AABB synchronisation        [done W2]
-    UpdateSleep(dt);            // 10. sleep evaluation                     [reserved Week 7]
-    Validate();                 // 11. debug validation (NaN/Inf scan)      [done]
+    IntegrateForces(dt);          //  1. force/gravity -> velocity            [done]
+    UpdateBroadPhase(dt);         //  2. broad phase update                   [reserved Week 6]
+    UpdateContacts();             //  3. narrow phase / contact generation     [done W2, O(N^2)]
+    BuildIslands();               //  4. island construction                  [reserved Week 7]
+    PrepareConstraints(dt);       //     solver cache + warm-start seeds       [done W5]
+    WarmStart();                  //  5. warm start                           [done W5]
+    SolveVelocityConstraints();   //  6. sequential impulses (normal+friction)[done W5]
+    IntegratePositions(dt);       //  7. velocity -> position (semi-implicit) [done]
+    SolvePositionConstraints(dt); //  8. split-impulse position layer         [done W5]
+    Synchronize();                //  9. transform/AABB synchronisation        [done W2]
+    UpdateSleep(dt);              // 10. sleep evaluation                     [reserved Week 7]
+    Validate();                   // 11. debug validation (NaN/Inf scan)      [done]
 }
 
 void World::SetBroadPhase(std::unique_ptr<IBroadPhase> broadPhase) {
@@ -617,6 +618,10 @@ void World::Clear() {
     // (and shapes before the shape pool) to leave no stale references behind.
     // The solver's cached constraints point into the contact list, so they go
     // first of all.
+    //
+    // Week 5 pseudo-velocities need no explicit ClearPseudoVelocities() here:
+    // they live on the Body hot state that is destroyed with m_bodies right
+    // below, so no pseudo state can survive a scene rebuild.
     if (m_contactSolver != nullptr) {
         m_contactSolver->Clear();
     }
@@ -642,7 +647,12 @@ void World::CheckSane() const {
             p2::IsValid(body.xf.p) && std::isfinite(body.xf.q.c) && std::isfinite(body.xf.q.s);
         const bool velocityOk = p2::IsValid(body.linearVelocity) && std::isfinite(body.angularVelocity);
         const bool accumulatorOk = p2::IsValid(body.force) && std::isfinite(body.torque);
-        if (transformOk && velocityOk && accumulatorOk) {
+        // Week 5: the pseudo-velocity state is solver scratch, but a NaN there
+        // would be integrated into the transform next step, so it gets the same
+        // scan as the real state.
+        const bool pseudoOk =
+            p2::IsValid(body.pseudoLinearVelocity) && std::isfinite(body.pseudoAngularVelocity);
+        if (transformOk && velocityOk && accumulatorOk && pseudoOk) {
             continue;
         }
         // Report before asserting: the abort itself carries no context, and
@@ -650,12 +660,14 @@ void World::CheckSane() const {
         // explodes. This is the debug-only safety net of Section 3.4.
         std::fprintf(stderr,
                      "World::CheckSane: body %d ('%s') has non-finite state: pos=(%g, %g) "
-                     "vel=(%g, %g) w=%g force=(%g, %g) torque=%g\n",
+                     "vel=(%g, %g) w=%g force=(%g, %g) torque=%g pseudoVel=(%g, %g) pseudoW=%g\n",
                      index, body.debugName.c_str(), static_cast<double>(body.xf.p.x),
                      static_cast<double>(body.xf.p.y), static_cast<double>(body.linearVelocity.x),
                      static_cast<double>(body.linearVelocity.y), static_cast<double>(body.angularVelocity),
                      static_cast<double>(body.force.x), static_cast<double>(body.force.y),
-                     static_cast<double>(body.torque));
+                     static_cast<double>(body.torque), static_cast<double>(body.pseudoLinearVelocity.x),
+                     static_cast<double>(body.pseudoLinearVelocity.y),
+                     static_cast<double>(body.pseudoAngularVelocity));
         assert(false && "World::CheckSane: non-finite body state (NaN/Inf)");
     }
 
@@ -843,27 +855,29 @@ void World::BuildIslands() {
     // bodies act as island boundaries and are never island members.
 }
 
-void World::PrepareConstraints() {
+void World::PrepareConstraints(float dt) {
     // Solver precompute step (no body state changes, so it is not one of the
-    // Section 4.6 phases): lever arms rA/rB, effective normal mass 1/K_n and the
-    // restitution bias, cached once and reused by every velocity iteration.
-    // Positions are frozen between this call and SolveVelocityConstraints, so the
-    // cached levers stay valid for the whole frame.
-    m_contactSolver->Prepare(m_bodies, m_contacts, m_solverSettings);
+    // Section 4.6 phases): lever arms rA/rB, effective normal/tangent masses,
+    // restitution bias (and the Baumgarte bias when split impulse is disabled),
+    // and the warm-start seeds read from ContactPoint. Positions are frozen
+    // between this call and SolveVelocityConstraints, so the cached levers stay
+    // valid for the whole velocity phase.
+    m_contactSolver->Prepare(m_bodies, m_contacts, m_solverSettings, dt);
 }
 
 void World::WarmStart() {
-    // RESERVED (Week 5): apply accumulatedImpulse * warmStartFactor to every
-    // persistent contact exactly once, before the velocity iterations begin.
-    // ContactSolver::WarmStart is a no-op in Week 3 (P08 deliberately starts
-    // without warm starting), but the call site and its ordering are final.
+    // Phase 5: apply the inherited accumulated impulses (normal + tangent) once,
+    // before the velocity iterations begin, so the solver starts from last
+    // frame's solution. m_previousContacts already inherited the per-point values
+    // by ContactID::Key() inside UpdateContacts.
     m_contactSolver->WarmStart(m_bodies, m_contacts, m_solverSettings);
 }
 
 void World::SolveVelocityConstraints() {
-    // Phase 6 (done W3): Sequential Impulse over the normal constraints. The
-    // solver writes the accumulated normal impulse back into each ContactPoint,
-    // which is the persistent storage Week 5 inherits for warm starting.
+    // Phase 6 (W3 normal impulses, W5 normal + friction): Sequential Impulse
+    // iterations. The solver writes the accumulated normal/tangent impulses back
+    // into each ContactPoint, which is the persistent storage Week 5 inherits for
+    // warm starting on the next frame.
     m_contactSolver->SolveVelocity(m_bodies, m_contacts, m_activeVelocityIterations, m_solverSettings);
 }
 
@@ -907,51 +921,21 @@ void World::IntegratePositions(float dt) {
     }
 }
 
-void World::SolvePositionConstraints() {
+void World::SolvePositionConstraints(float dt) {
     // ========================================================================
-    // Week 2 position push-out: the last remaining TEMPORARY response.
+    // Phase 8 (Week 5): split-impulse position layer. The Week 2 TEMPORARY
+    // position push-out is GONE - it teleported bodies (not momentum conserving,
+    // no angular response) and could not coexist with the velocity solver.
     //
-    // The velocity layer is now owned by ContactSolver (phase 6), so the Week 2
-    // normal-velocity projection / restitution hack is GONE. What remains is a
-    // pure position-level correction that removes residual penetration so deep
-    // overlaps do not visibly sink. It is not physically derived and has no
-    // pseudo-velocity: Week 5 replaces this whole function with split-impulse
-    // position correction (Section 6.4).
+    // ContactSolver::SolvePosition solves pseudo-velocity constraints (a
+    // fraction beta of the overlap excess above the slop band), integrates those
+    // pseudo-velocities into the transforms once, and clears them. Real
+    // velocities are never touched: the correction removes penetration without
+    // injecting energy. When `useSplitImpulse` is false the solver does nothing
+    // here; penetration is then handled by the Baumgarte bias in Prepare
+    // (comparison baseline).
     // ========================================================================
-    const int32_t contactCount = static_cast<int32_t>(m_contacts.size());
-    for (int32_t contactIndex = 0; contactIndex < contactCount; ++contactIndex) {
-        const Contact& contact = m_contacts[static_cast<std::size_t>(contactIndex)];
-        // Handles are rebuilt every step, but stay defensive: a destroyed body
-        // must never make the response phase index a dead slot.
-        if (!IsValid(contact.bodyA) || !IsValid(contact.bodyB)) {
-            continue;
-        }
-        Body& bodyA = *GetBodyMutable(contact.bodyA);
-        Body& bodyB = *GetBodyMutable(contact.bodyB);
-        const Vec2 normal = contact.manifold.normal;
-        const float invMassSum = bodyA.invMass + bodyB.invMass;
-
-        // The slop band is deliberately ignored: penetrating less than that is
-        // not worth a correction step (it would only inject jitter).
-        const float correction =
-            Clamp((contact.manifold.penetration - kLinearSlop) * kPositionCorrectionFactor, 0.0f,
-                  kMaxLinearCorrection);
-        if (correction <= 0.0f || invMassSum <= 0.0f) {
-            continue;
-        }
-        // Move A along -normal and B along +normal. Dividing the total by the
-        // inverse-mass sum and re-multiplying by each inverse mass means the
-        // heavier body moves less (a static body has invMass == 0 and never moves
-        // at all). Only dynamic bodies participate explicitly, so a kinematic
-        // body is never displaced by a contact.
-        const Vec2 unitPush = normal * (correction / invMassSum);
-        if (bodyA.IsDynamic()) {
-            bodyA.xf.p -= unitPush * bodyA.invMass;
-        }
-        if (bodyB.IsDynamic()) {
-            bodyB.xf.p += unitPush * bodyB.invMass;
-        }
-    }
+    m_contactSolver->SolvePosition(m_bodies, m_contacts, dt, m_activePositionIterations, m_solverSettings);
 }
 
 void World::Synchronize() {

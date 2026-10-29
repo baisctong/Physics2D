@@ -22,6 +22,7 @@ add_library(physics2d_core STATIC
     Collision/SAT.cpp
     Collision/Analytic.cpp
     Solver/ContactSolver.cpp
+    Solver/ContactSolverPosition.cpp
 )
 
 add_library(p2::core ALIAS physics2d_core)

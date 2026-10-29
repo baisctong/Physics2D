@@ -51,6 +51,16 @@ struct Body {
     Vec2 linearVelocity{0.0f, 0.0f};
     float angularVelocity = 0.0f;
 
+    // WEEK 5 (split impulse): pseudo-velocities owned by the position-correction
+    // layer only. The velocity solver never reads them and the position layer
+    // never writes the real velocities above: after the pseudo-velocity
+    // iterations these are integrated into `xf` once and then zeroed, so the
+    // correction removes penetration without injecting energy into the real
+    // velocity state (Section 6.4). Appended to the hot block - the Week 3
+    // velocity-solver contract is unchanged.
+    Vec2 pseudoLinearVelocity{0.0f, 0.0f};
+    float pseudoAngularVelocity = 0.0f;
+
     Vec2 force{0.0f, 0.0f}; // accumulated external force, cleared every step
     float torque = 0.0f;
 

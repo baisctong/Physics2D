@@ -15,11 +15,11 @@
 //   2. broad phase update              6    UpdateBroadPhase()     [reserved]
 //   3. narrow phase / contacts         2    UpdateContacts()       [done W2]
 //   4. island construction             7    BuildIslands()         [reserved]
-//      solver preparation             3    PrepareConstraints()   [done W3]
-//   5. warm start                      5    WarmStart()            [W3 no-op]
-//   6. velocity iterations             3    SolveVelocityConstraints() [done W3 normal-only]
+//      solver preparation             3/5  PrepareConstraints()   [done W5: friction + warm-start seeds]
+//   5. warm start                      5    WarmStart()            [done W5]
+//   6. velocity iterations             3/5  SolveVelocityConstraints() [done W5: normal + friction]
 //   7. integrate velocity -> position   1   IntegratePositions()   [done]
-//   8. position iterations (split imp) 2/5  SolvePositionConstraints() [W3 push-out only]
+//   8. position iterations (split imp) 5    SolvePositionConstraints(dt) [done W5: pseudo-velocity layer]
 //   9. synchronise AABB/transform      2    Synchronize()          [done W2]
 //   10. sleep evaluation               7    UpdateSleep()          [reserved]
 //   11. debug validation               1    Validate()             [done]
@@ -31,15 +31,17 @@
 //   UpdateContacts() with O(N^2) pair enumeration + AABB filter. Week 6 replaces
 //   only the enumeration with IBroadPhase; the Contact data contract stays.
 // - Persistence: per-point accumulated impulses are inherited across frames by
-//   ContactID::Key() in MatchAndInheritImpulses (Week 5 completes the solver
-//   side; the matching logic already exists so warm starting can rely on it).
-// - Week 3 solver: ContactSolver (Solver/ContactSolver.h) is owned via
-//   unique_ptr and only forward-declared here, so Core does not include Solver
-//   headers. The World prepares constraints once per step, then runs
-//   velocityIterations sequential normal impulses before integrating positions.
-// - Remaining temporary response: SolvePositionConstraints keeps the Week 2
-//   position push-out (Baumgarte-free) until Week 5 replaces it with split
-//   impulse; the Week 2 velocity projection has been removed in Week 3.
+//   ContactID::Key() in MatchAndInheritImpulses; the Week 5 solver consumes them
+//   for warm starting, so this mapping is now on the hot path (do not weaken it).
+// - Solver: ContactSolver (Solver/ContactSolver.h) is owned via unique_ptr and
+//   only forward-declared here, so Core does not include Solver headers. The
+//   World prepares constraints once per step, runs warm starting + velocityIterations
+//   sequential impulses (normal + friction), integrates positions, then runs the
+//   split-impulse position iterations with the same dt (phase 8).
+// - Remaining temporary response: none. The Week 2 position push-out was replaced
+//   by the split-impulse pseudo-velocity layer in Week 5 (useSplitImpulse=false
+//   switches to the Baumgarte bias for the comparison experiment, not back to the
+//   push-out).
 //
 // Why define the empty phases early: inserting a phase in the middle of Step()
 // later means re-auditing every ordering assumption. With the skeleton in
@@ -163,6 +165,8 @@ class World {
     // ------------------------------------------------------------------
 
     // Runs one fixed step using the World's SolverSettings iteration counts.
+    // `dt` is also handed to the split-impulse position layer (its bias is a
+    // velocity target, so it needs the same step the integrator used).
     void Step(float dt);
 
     // Same, with a per-call iteration override (testbed sliders, experiments).
@@ -220,14 +224,15 @@ class World {
     void UpdateBroadPhase(float dt); // reserved Week 6
     void UpdateContacts();           // Week 2: O(N^2) + AABB filter + analytic narrow phase
     void BuildIslands();             // reserved Week 7
-    void PrepareConstraints();       // Week 3: precompute rA/rB, K_n, restitution bias
-    void WarmStart();                // Week 5 (no-op until then)
-    void SolveVelocityConstraints(); // Week 3: sequential normal impulses
+    void
+    PrepareConstraints(float dt);    // Week 5: rA/rB, K_n/K_t, restitution + Baumgarte bias, warm-start seeds
+    void WarmStart();                // Week 5: apply the seeded accumulated impulses once
+    void SolveVelocityConstraints(); // Week 5: normal + friction sequential impulses
     void IntegratePositions(float dt);
-    void SolvePositionConstraints(); // Week 2 position push-out (Week 5: split impulse)
-    void Synchronize();              // Week 2: body AABBs from shapes
-    void UpdateSleep(float dt);      // reserved Week 7
-    void Validate() const;           // debug-only NaN scan
+    void SolvePositionConstraints(float dt); // Week 5: split-impulse pseudo-velocity position layer
+    void Synchronize();                      // Week 2: body AABBs from shapes
+    void UpdateSleep(float dt);              // reserved Week 7
+    void Validate() const;                   // debug-only NaN scan
 
     // Returns the body for a valid handle, asserting on misuse (debug).
     [[nodiscard]] Body* GetBodyMutable(BodyHandle handle);

@@ -1,50 +1,83 @@
 #pragma once
 
-// p2::ContactSolver — Sequential Impulse (PGS) velocity solver, Week 3 stage.
+// p2::ContactSolver — Sequential Impulse (PGS) constraint solver.
 //
 // ============================================================================
-// Week 3 scope: normal impulses only
+// Week 3: normal impulses (P08)            -> done
+// Week 5: friction, warm starting, split impulse position layer (P09/P10)
 // ============================================================================
-// This is the first *real* constraint solver in the project. It replaces the
-// Week 2 temporary normal-velocity projection (Section 6.4, P08):
+// The velocity layer solves two one-dimensional constraints per manifold point
+// in the SAME iteration - normal first, tangent second:
 //
-//   Prepare()       Precompute, per contact point: lever arms rA/rB, effective
-//                   normal mass 1/K_n, and the restitution bias. Positions do not
-//                   change during the velocity phase, so the cached levers stay
-//                   valid for the whole frame.
-//   WarmStart()     Week 5 (apply inherited accumulated impulses once before the
-//                   iterations). No-op in Week 3 - P08 explicitly starts without
-//                   warm starting.
-//   SolveVelocity() `velocityIterations` passes over every prepared point:
-//                       vn     = Dot(vRel, normal)
-//                       lambda = -(vn + bias) * normalMass
-//                       newAcc = max(accumulated + lambda, 0)   // push, never pull
-//                       apply (newAcc - accumulated) to A(-n) and B(+n) at rA/rB
-//                                                        (including the angular terms)
+//   Normal (non-penetration, C_dot = vRel . n >= 0)
+//     K_n      = invMassA + invMassB + invIA*Cross(rA,n)^2 + invIB*Cross(rB,n)^2
+//     lambda   = -(vn + bias) / K_n
+//     accN_new = max(accN + lambda, 0)          // contacts push, never pull
+//     apply (accN_new - accN) * n               // A gets -J, B gets +J
 //
-// Restitution bias (D5/P08): with `vn0` the approach speed captured once in
-// Prepare and `e` the combined restitution, the target relative normal velocity is
-// `-e * vn0`. The solver therefore uses
-//     bias = e * vn0            when vn0 < -restitutionThreshold
-//     bias = 0                  otherwise (resting contacts must not bounce)
-// and lambda = -(vn + bias) / K_n. Note vn0 < 0 for an approaching pair, so the
-// bias is negative and the target ends up positive (separating).
+//   Tangent (Coulomb friction, |accT| <= mu * accN)
+//     t        = Skew(normal) = Perp(normal)
+//     K_t      = invMassA + invMassB + invIA*Cross(rA,t)^2 + invIB*Cross(rB,t)^2
+//     lambdaT  = -(vRel . t) / K_t
+//     maxF     = mu * accN_new                  // after the normal update
+//     accT_new = Clamp(accT + lambdaT, -maxF, maxF)
+//     apply (accT_new - accT) * t
+//
+// Ordering and clamping rules (they are the Week 5 stability contract):
+// - The normal constraint is solved before the tangent one within an iteration,
+//   because the friction cone radius depends on the *updated* normal impulse;
+//   using the pre-update value would let the cone shrink under an already
+//   applied tangent impulse.
+// - The clamp is applied to the ACCUMULATED impulse, never to the increment:
+//   clamping increments can drift outside the cone and makes stacking unstable.
+// - `mu` is the pre-combined contact friction (World computes sqrt(muA*muB));
+//   the solver must not combine it again.
+// - `bias` is captured in Prepare, i.e. BEFORE warm starting, from the initial
+//   relative velocity (restitution) and - only when split impulse is disabled -
+//   from the Baumgarte penetration term. Capturing restitution after warm start
+//   would "bounce" resting contacts forever.
+//
+// Warm starting (P09 D4): the persistent accumulated impulses live in
+// ContactPoint::normalImpulse / tangentImpulse and are inherited across frames
+// by World (matched by ContactID::Key). Prepare seeds the per-frame accumulator
+// with `inherited * warmStartFactor`; WarmStart applies that seed once before
+// the iterations, so the cached accumulator and the actually applied impulse
+// never diverge (warmStartFactor is the trust knob: 0 == Week 4 behaviour,
+// 1 == trust last frame's solution completely).
+//
+// Split impulse position layer (P10, Section 6.4): penetration is corrected by a
+// separate pseudo-velocity solve that never touches the real velocities:
+//
+//   for each position iteration:
+//     separation_now  = Dot(Mul(xfB,localPointB) - Mul(xfA,localPointA), n)
+//     penetration_now = manifold.penetration - separation_now
+//     excess          = max(0, penetration_now - splitImpulseSlop)
+//     target          = (beta / dt) * excess              // separating velocity
+//     pseudoVn        = pseudo relative normal velocity
+//     lambdaP         = -(pseudoVn - target) / K_n
+//     accP_new        = max(accP + lambdaP, 0)            // push only
+//   after the iterations:
+//     xf.p += dt * pseudoLinearVelocity       (clamped to maxLinearCorrection)
+//     xf.q  = xf.q * Rot(dt * pseudoAngularVelocity)  (clamped to kMaxAngularCorrection)
+//     then the pseudo-velocities are cleared.
+//
+// When `useSplitImpulse` is false the position layer is skipped and Prepare adds
+// the Baumgarte bias (beta/dt)*max(0, penetration - linearSlop) to the velocity
+// constraint instead. That is the documented comparison baseline: it stabilises
+// penetration too, but it injects energy back into the real velocities (resting
+// stacks jitter / re-bounce), which is exactly what split impulse avoids.
 //
 // Sign conventions (Section 4.2, normative):
 //   normal points A -> B; vRel = (vB + wB x rB) - (vA + wA x rA);
-//   a positive normal impulse is applied as -J to A and +J to B.
+//   a positive normal impulse is applied as -J to A and +J to B; for the pseudo
+//   velocities the same application rule holds.
 //
-// Data ownership: the *persistent* accumulated normal impulse lives in
-// ContactPoint::normalImpulse, so Week 5 can inherit it across frames by
-// ContactID and warm start from it. ContactSolver only caches derived per-frame
-// quantities and writes the accumulated value back after solving.
-//
-// ============================================================================
-// Reserved extensions (Weeks 5-6): tangent/friction constraints (2 tangent
-// masses, friction cone clamp), warm starting, split impulse pseudo-velocities,
-// and the per-island solve ordering. ConstraintPoint has room for those fields;
-// adding them is additive and does not change this file's Week 3 contract.
-// ============================================================================
+// Data ownership: the *persistent* accumulated impulses live in ContactPoint, so
+// World can inherit them by ContactID across frames. ContactSolver only caches
+// derived per-frame quantities and writes the accumulated values back after
+// solving. The position layer rebuilds its own lever arms from the
+// post-integration transforms because the velocity cache is one integration step
+// stale by the time phase 8 runs.
 
 #include "physics2d/Collision/Contact.h"
 #include "physics2d/Core/Body.h"
@@ -66,8 +99,14 @@ struct ContactConstraintPoint {
     Vec2 rB{0.0f, 0.0f};             // lever arm: body B origin -> anchor (world)
     Vec2 normal{0.0f, 1.0f};         // contact normal, A -> B
     float normalMass = 0.0f;         // 1 / K_n
-    float bias = 0.0f;               // restitution target term (e * vn0)
-    float accumulatedImpulse = 0.0f; // per-frame accumulation (written back to ContactPoint)
+    float bias = 0.0f;               // restitution + (Baumgarte when split impulse is off)
+    float accumulatedImpulse = 0.0f; // per-frame normal accumulation (written back to ContactPoint)
+
+    // ---- Week 5 additions (additive; the Week 3 fields above are unchanged) ----
+
+    Vec2 tangent{1.0f, 0.0f};               // unit tangent t = Skew(normal)
+    float tangentMass = 0.0f;               // 1 / K_t
+    float accumulatedTangentImpulse = 0.0f; // friction cone accumulator, |accT| <= mu*accN
 };
 
 class ContactSolver {
@@ -77,17 +116,37 @@ class ContactSolver {
     // Builds the per-frame constraint cache from the contact list. Points whose
     // effective normal mass is not positive (both bodies static/infinite, NaN)
     // are skipped with a debug assert: they can never push anything apart.
+    //
+    // Week 5: also caches the tangent direction/mass, seeds the accumulated
+    // impulses from ContactPoint (times warmStartFactor when warm starting is on)
+    // and adds the Baumgarte bias when split impulse is disabled. `dt` is only
+    // consumed by that bias term; the default is the fixed step, and World passes
+    // the step it is actually integrating so the bias stays consistent.
     void Prepare(const std::vector<Body>& bodies, std::vector<Contact>& contacts,
-                 const SolverSettings& settings);
+                 const SolverSettings& settings, float dt = kFixedTimeStep);
 
-    // RESERVED (Week 5): apply inherited accumulated impulse * warmStartFactor
-    // once, before the velocity iterations. No-op in Week 3.
+    // Applies the seeded accumulated impulses (n * accN + t * accT) once, before
+    // the velocity iterations. No-op when warm starting is disabled (the seeds
+    // are zero then, so this is an early-out, not a behaviour branch).
     void WarmStart(std::vector<Body>& bodies, std::vector<Contact>& contacts, const SolverSettings& settings);
 
-    // Sequential normal impulses, `iterations` passes (P08 D4). Writes the final
-    // accumulated normal impulse back into every ContactPoint.
+    // Sequential impulses, `iterations` passes: normal then tangent per point.
+    // Writes the final accumulated impulses back into every ContactPoint.
     void SolveVelocity(std::vector<Body>& bodies, std::vector<Contact>& contacts, int32_t iterations,
                        const SolverSettings& settings);
+
+    // Split impulse position layer (phase 8). Solves `iterations` pseudo-velocity
+    // passes, integrates the pseudo-velocities into the body transforms once,
+    // and clears them. Never reads or writes linearVelocity/angularVelocity of
+    // any body. With `useSplitImpulse == false` it only clears the pseudo state
+    // (penetration is then handled by the Baumgarte bias).
+    void SolvePosition(std::vector<Body>& bodies, std::vector<Contact>& contacts, float dt,
+                       int32_t iterations, const SolverSettings& settings);
+
+    // Zeroes the pseudo-velocities of every body. SolvePosition does this itself;
+    // the method is public so World::Clear (and tests) can guarantee no pseudo
+    // state leaks across scene rebuilds.
+    void ClearPseudoVelocities(std::vector<Body>& bodies) const;
 
     // ---- math helpers, public so unit tests can pin the formulas (P08 D1/D2) ----
 
@@ -95,9 +154,19 @@ class ContactSolver {
     [[nodiscard]] static float ComputeEffectiveNormalMass(const Body& bodyA, const Body& bodyB, Vec2 rA,
                                                           Vec2 rB, Vec2 normal) noexcept;
 
+    // K_t: identical form with the tangent axis. Kept as a named helper so the
+    // tests (and the header comments) can distinguish the two constraints.
+    [[nodiscard]] static float ComputeEffectiveTangentMass(const Body& bodyA, const Body& bodyB, Vec2 rA,
+                                                           Vec2 rB, Vec2 tangent) noexcept;
+
     // vRel = (vB + wB x rB) - (vA + wA x rA)
     [[nodiscard]] static Vec2 ComputeRelativeVelocity(const Body& bodyA, const Body& bodyB, Vec2 rA,
                                                       Vec2 rB) noexcept;
+
+    // Pseudo version of the same formula: uses pseudoLinearVelocity /
+    // pseudoAngularVelocity only (split impulse position layer).
+    [[nodiscard]] static Vec2 ComputePseudoRelativeVelocity(const Body& bodyA, const Body& bodyB, Vec2 rA,
+                                                            Vec2 rB) noexcept;
 
     [[nodiscard]] int32_t GetConstraintCount() const noexcept {
         return static_cast<int32_t>(m_constraints.size());
