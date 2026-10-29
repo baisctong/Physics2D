@@ -143,7 +143,7 @@ Week 5 加摩擦 + warm starting 后会站立（`v0.5-stable-stack` 里程碑）
 | 依赖下载失败 | 检查网络代理；或 `-DPHYSICS2D_OFFLINE=ON` 复用已有 `_deps` |
 | ctest 里 death tests 被 SKIP | 正常：death test 需要测试进程能写临时文件；本沙箱限制工作区内可执行文件的写入。CI（Linux/普通机器）会真正执行。把测试 exe 复制到工作区外运行即可看到它们通过 |
 | ASan 链接/运行失败（MSVC） | MSVC 只支持 ASan；`sanitize` 预设已在开启 ASan 时移除与 `/fsanitize=address` 冲突的 `/RTC1`；UBSan 请用 Linux job。ASan 运行需要 vcvars 的 PATH（ASan runtime DLL） |
-| **只改 header 后增量构建不重编（stale object）** | **本机特有**：中文 locale 的 cl.exe 把 `/showIncludes` 打成 `注意: 包含文件:`，而 CMake 往 `CMakeFiles/rules.ninja` 写的是 UTF-8 前缀，Ninja 按字节比较匹配不上 → depfile 为空，头文件改动不触发重编（实测 `VSLANG=1033` 在本机 VS 安装上无效）。**处理**：改过 header 后用 `build.ps1 ... -Clean`（`cmake --build --clean-first`），或做 canonical clean build（删 `build/<preset>`）。canonical 周验收一直是 clean build，所以历史数据未受影响 |
+| **只改 header 后增量构建不重编（stale object）** | **本机特有**：中文 locale 的 cl.exe 把 `/showIncludes` 打成 `注意: 包含文件:`，而 CMake 往 `CMakeFiles/rules.ninja` 写的是 UTF-8 前缀，Ninja 按字节比较匹配不上 → depfile 为空，头文件改动不触发重编（实测 `VSLANG=1033` 在本机 VS 安装上无效）。**危险后果**：改了类成员的 header 后，旧 obj 与新 obj 混链会因 new/delete 尺寸不匹配触发 `HEAP CORRUPTION DETECTED`（Week 7 真实踩到，不是代码越界）。**处理**：`scripts/build.ps1` 已加自动防护——Windows 上检测到"任意 header 比 build 目录内最新 obj 还新"时打印 WARNING 并自动 `--clean-first`；也可显式 `build.ps1 ... -Clean` 或删 `build/<preset>` |
 | `physics2d_testbed.exe` 里金字塔/随机盒场看不全 | 正常：W6 起 Camera 会在场景 Setup/Reset/切换时自适应取景（`FocusOnWorld`），`R` 回默认视野；若手动缩放过，按 `R` 重置 |
 
 ## 7. 目录速览

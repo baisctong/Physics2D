@@ -4,22 +4,23 @@
 > **宽相 → 窄相 → 接触流形 → Sequential Impulse 求解 → 岛屿休眠** 的链路，
 > 物理核心零第三方依赖、可 headless 回归、用 Tracy 量化每一阶段耗时。
 
-**当前进度：Week 1-6 完成**（数学库/积分骨架/渲染循环 + 形状系统与解析碰撞 +
+**当前进度：Week 1-7 完成**（数学库/积分骨架/渲染循环 + 形状系统与解析碰撞 +
 **凸多边形 SAT + 裁剪式 Manifold + SATCache** + **摩擦锥/warm starting/split impulse 求解器** +
 **10 方块堆叠 10 秒稳定里程碑** + **可插拔宽相（BruteForce + SAP，2000 物体 7.8x 加速）** +
-**headless 确定性回归**；Week 7-8 的接口已预留）。详细计划见
+**岛屿分区/按岛求解/整岛原子休眠（500 物体休眠后 Step 1.73x）** + **headless 确定性回归**；
+Week 8 为文档与交付周）。详细计划见
 [`docs/ROADMAP.md`](docs/ROADMAP.md)，接口预留清单见 [`docs/dev-interfaces.md`](docs/dev-interfaces.md)。
 **换会话/接手开发先读 [`HANDOFF.md`](HANDOFF.md)**（现状、验证基线、下一周任务卡、红线与坑）。
 
-> 演示 GIF 将在后续周录制：10 方块稳定堆叠（已达成）/ 200 物体 SAP 对比（数据已达成）/ 500 物体休眠。
+> 演示 GIF 将在 Week 8 录制：10 方块稳定堆叠 / 2000 物体 SAP 对比 / 500 物体休眠 / 多米诺连锁唤醒。
 
-## ✨ 已实现（Week 1-6）
+## ✨ 已实现（Week 1-7）
 
 - **数学库**（`p2::Math`）：`Vec2`（三种 `Cross` 重载）、`Mat2`、`Rot`（c/s 存储）、`Transform`、
   `AABB`（fat AABB 语义）、`MathUtils`（FNV-1a + 量化弱 hash）。
 - **Core**（`p2::Core`）：`Body`/`BodyDef`/`BodyType`、generation 计的 `Handle`+`IDPool`、
-  11 阶段 `Step` 流水线、形状池（Circle/Plane/**Polygon**）、接触列表、固定步长 `StepAccumulator`、
-  semi-implicit Euler、单步位移钳制、可插拔 `IBroadPhase`、Debug `CheckSane`。
+  12 阶段 `Step` 流水线、形状池（Circle/Plane/**Polygon**）、接触列表、固定步长 `StepAccumulator`、
+  semi-implicit Euler、单步位移钳制、可插拔 `IBroadPhase`、岛屿分区与整岛休眠、Debug `CheckSane`。
 - **碰撞**（`p2::Collision`）：
   - 解析路径：圆-圆、圆-平面、**圆-多边形（Voronoi 最近特征）**、**多边形-平面（2 点支撑）**；
   - **凸多边形 SAT**：`FindMaxSeparation`、reference/incident face、Sutherland–Hodgman 式
@@ -30,23 +31,24 @@
     （单 vector 端点数组 + 首帧 `std::sort` / 稳态冒泡增量排序 + 有序 active 集合 + y 轴二次过滤，
     `ValidateInternalState` 可验内部不变量）；World 侧 fat AABB（+0.1m margin）、proxy 生命周期管理、
     候选对规范化为 (i<j, sorted, deduped) → **切换宽相不改变物理结果（逐位一致）**。
-- **求解器**（`p2::Solver`，Week 5 完整）：
+- **求解器**（`p2::Solver`，Week 5 完整 + Week 7 按岛）：
   - **摩擦**：`t = Skew(n)`、`K_t`、**累计**切向冲量钳制 `accT ∈ [−μ·accN, +μ·accN]`（摩擦锥），
     法向先解、切向后解；
   - **Warm starting**：`ContactPoint` 累计冲量按 `ContactID::Key()` 跨帧继承，`Prepare` 播种、
     `WarmStart` 施加一次（默认 `warmStartFactor = 1.0`，Box2D 同款）；
   - **Split impulse**：独立伪速度位置层清理穿透，**不向真实速度注入能量**（W2 的临时位置推出已删除）；
+  - **岛屿（Week 7）**：显式栈 DFS 的接触图连通分量（static/kinematic 为边界）、规范序分区；
+    三种求解模式（flat / **grouped-direct 默认** / grouped-packed opt-in）**逐位一致**；
   - restitution 速度阈值、Baumgarte 对比基线（`useSplitImpulse=false` 时）、`SolverSettings` 全参数运行时生效。
-- **可交互测试台**：GLFW + OpenGL 3.3 Core + Dear ImGui，6 个 demo：
-  `FallingBall`（落地+restitution+接触可视化）、`SphereStack`（3 球叠放）、
-  `BoxStack`（10 层方块塔，**Week 5 起 10 s 稳定**，最大穿透 3.9 mm）、
-  `FrictionRamp`（可调倾角/摩擦的斜面，实时 μ vs tanθ 判定）、
-  **`Pyramid200`**（完美盒金字塔，层数 4–24 可调，默认 16 层=136 盒）、
-  **`StressBenchmark`**（400 随机盒压力场）。
-  面板：Solver 参数实时滑条、**Broad phase 下拉（Auto/None/BruteForce/SAP + 候选对/proxy 数）**、
-  Contacts 调试（法线/穿透/累计冲量，点击高亮）、Status（Step 耗时/宽相等）；
-  大场景自适应取景（`Camera::FocusOnWorld`）；`--demo <name>` / `--broadphase` / `--smoke N --hidden`
-  支持自动化验证。
+- **可交互测试台**：GLFW + OpenGL 3.3 Core + Dear ImGui，8 个 demo：
+  `FallingBall`、`SphereStack`、`BoxStack`（10 层方块塔，**10 s 稳定**，最大穿透 3.9 mm）、
+  `FrictionRamp`（μ vs tanθ）、`Pyramid200`（完美盒金字塔，4–24 层可调）、
+  `StressBenchmark`（400 随机盒）、
+  **`Dominoes`**（20 块骨牌，睡眠后推第一块 → 连锁唤醒全部）、
+  **`IslandSleep500`**（500 盒 / 100 岛，休眠前后 Step 耗时对比）。
+  面板：Solver 参数滑条、Broad phase 下拉、**islands/awake/sleeping 状态**、
+  Contacts 调试（法线/穿透/累计冲量 + **冲量柱状条与摩擦锥占用**，点击高亮）、Status（Step 耗时）；
+  **Space 暂停 / `.` 单步 / 1-2-3 慢放**；大场景自适应取景；`--demo` / `--broadphase` / `--smoke N --hidden`。
 - **工程/量化**：`physics2d_bench` headless 宽相基准（真实 Release 数字进下表）、
   `physics2d_regression` 确定性回归（量化弱 hash + golden + CTest + CI job）、
   CMake presets（Debug/Release/Sanitize/Headless + VS2022 兜底）、GoogleTest
@@ -99,8 +101,8 @@ flowchart LR
 
 ```text
 include/physics2d/{Math,Core,Collision,Solver}/   # 公共头
-src/{Math,Core,Collision,Solver}/                 # Week 1-6 实现（core 静态库）
-testbed/                                          # 渲染 + ImGui 测试台 + 6 个 demos + SceneBuilders
+src/{Math,Core,Collision,Solver}/                 # Week 1-7 实现（core 静态库）
+testbed/                                          # 渲染 + ImGui 测试台 + 8 个 demos + SceneBuilders
 tests/unit/                                       # GoogleTest 单测
 tests/regression/                                 # headless 确定性回归工具 + golden（W6）
 bench/                                            # headless 宽相基准（W6，真实数字）
@@ -108,17 +110,18 @@ docs/                                             # 架构、接口预留清单�
 scripts/                                          # bootstrap / build / format / pre-commit
 ```
 
-快速开始里的第 3 步可用下拉框切换全部 6 个 demo
-（FallingBall / SphereStack / BoxStack / FrictionRamp / Pyramid200 / StressBenchmark），
-Broad phase 面板可在 Auto/None/BruteForce/SAP 间实时切换。
+快速开始里的第 3 步可用下拉框切换全部 8 个 demo
+（FallingBall / SphereStack / BoxStack / FrictionRamp / Pyramid200 / StressBenchmark / Dominoes / IslandSleep500），
+Broad phase 面板可在 Auto/None/BruteForce/SAP 间实时切换，Status 面板显示 islands/awake/sleeping；
+**Space 暂停、`.` 单步、1/2/3 慢放**。
 
 ## 📊 测试与性能
 
-- 单测：**321 个 ctest 用例**（Release 322；= 320 个 gtest 用例，其中 15 个 death test 在沙箱内自动
+- 单测：**354 个 ctest 用例**（Release 355；= 353 个 gtest 用例，其中 15 个 death test 在沙箱内自动
   SKIP、CI 执行，+ 1 个 `regression_default` 回归用例）。`debug` / `release` / `sanitize`（MSVC ASan）
   三套 preset 全绿，MSVC `/W4 /permissive-` 项目代码零警告。clean 配置+构建+ctest：
-  debug 42.5s / release 47.1s / sanitize(ASan) 66.1s（i7-12650H，含依赖编译）。
-  测试 exe 复制到工作区外运行 → **320/320 gtest 全过**（15 个 death test 真正执行）。
+  debug 55.4s / release 53.5s / sanitize(ASan) 82.9s（i7-12650H，含依赖编译）。
+  测试 exe 复制到工作区外运行 → **353/353 gtest 全过**（15 个 death test 真正执行）。
 - **宽相性能（真实 Release 数字；`physics2d_bench`，30×30 m 随机盒场景，seed 42，1000 帧取
   median、前 100 帧预热丢弃；只计 `UpdateAABB + QueryPairs`，不含物理步进）**：
 
@@ -154,15 +157,34 @@ Broad phase 面板可在 Auto/None/BruteForce/SAP 间实时切换。
 - **确定性回归**：`physics2d_regression` 重放 `tower30+circles20` 600 步，量化弱 hash
   **`588d30e70f9b4ddd`**（quantum 1e-5）与 golden 一致（CTest `regression_default` + CI job）。
 - Testbed smoke（canonical debug build，300 步；`broadphase` 为 Auto 实际安装的实现）：
-  - `--demo BoxStack --smoke 600 --hidden` → `bodies=11 contacts=10 points=20 max_pen=3.893mm`，塔站立；
-  - `--demo FallingBall --smoke 150 --hidden` → `contacts=1`，球停在 y=0.495（穿透 5.000mm）；
-  - `--demo SphereStack --smoke 300 --hidden` → `bodies=4 contacts=3`，3 球站立（穿透 3.063mm）；
+  - `--demo BoxStack --smoke 600 --hidden` → `bodies=11 contacts=10 points=20 max_pen=3.893mm`，塔站立
+    （900 步后整岛入睡）；
+  - `--demo FallingBall --smoke 150 --hidden` → `contacts=1`，球停在 y=0.495（穿透 5.000mm，已入睡）；
+  - `--demo SphereStack --smoke 300 --hidden` → `bodies=4 contacts=3`，3 球站立（穿透 3.063mm，已入睡）；
   - `--demo FrictionRamp --smoke 300 --hidden` → θ=15°、μ=0.30>tanθ=0.268，方块保持静止；
-  - `--demo Pyramid200 --smoke 300 --hidden` → `bodies=137 contacts=324 max_pen=41.9mm broadphase=SAP
-    candidate_pairs=496`（600 步 29.7mm、基本静止）；
-  - `--demo StressBenchmark --smoke 300 --hidden` → `bodies=401 contacts=819 candidate_pairs=1687
-    broadphase=SAP avg_frame_ms≈13.7`（400 盒密堆的 178mm 穿透是迭代预算/载荷现象，切宽相物理不变）.
-- 休眠前后 Step 耗时对比（W7）将补进本表。
+  - `--demo Pyramid200 --smoke 300 --hidden` → `bodies=137 contacts=324 max_pen=41.9mm broadphase=SAP`；
+  - `--demo StressBenchmark --smoke 300 --hidden` → `bodies=401 contacts=820 candidate_pairs=1679
+    broadphase=SAP`（400 盒密堆的 171mm 穿透是迭代预算/载荷现象，切宽相物理不变）；
+  - `--demo Dominoes --smoke 600 --hidden` → 20 块骨牌 woken_after_sleep=20/20、fallen=20/20、
+    chain_reach=20、first_skipped=-1；
+  - `--demo IslandSleep500 --smoke 600 --hidden` → `bodies=501 islands=100 awake=0 sleeping=500
+    contacts=500 max_pen=3.983mm`，release 下 Step 0.4554→0.2627 ms（1.73x）。
+- **岛屿与休眠（Week 7，真实数字）**：
+  - **岛屿**：显式栈 DFS 分岛（static/kinematic 为边界、不传递连通性）；3 个独立堆叠 → 3 岛、
+    桥接后合并、500-body 长链 → 1 岛/499 contact 不溢出；岛分区规范序。
+  - **按岛求解**：flat / **grouped-direct（默认）** / grouped-packed 三种模式**逐位一致**
+    （两岛 276 次 + 密集单岛 21,760 次 float 比较 0 差异）；grouped-packed 实测 Release 反而慢 18%
+    （400 体的 Body 数组本就装得进 L2），因此默认关闭、保留为 opt-in。
+  - **整岛原子休眠**（IslandSleep500：500 盒 / 100 岛，Release 600 步）：**frame 105 (1.75 s) 全部入睡**；
+    唤醒期平均 Step **0.4554 ms → 全休眠 0.2627 ms，加速 1.73x**（debug 同场景 4.95→2.94 ms，
+    1.69x；休眠后仍保留宽相 sweep/接触复用，故非数量级）。10 盒塔 debug 下 **3.30x**
+    （87.5 → 26.5 µs/step，sleep step 859——残余抖动需要真正的 0.5 s 安静窗，阈值保持设计值 0.01）。
+  - 休眠后 100 步 body 状态与接触累计冲量**逐位不变**；4 个外部唤醒入口与宽相邻近唤醒都**整岛**唤醒；
+    smoke 输出 `islands/awake/sleeping`。
+- **多米诺连锁唤醒（Dominoes，Release 600 步）**：20 块 0.30×1.0 m 骨牌先入睡，推第一块后
+  **woken_after_sleep=20/20、fallen=20/20、chain_reach=20、first_skipped=-1**（无任何骨牌被跳过）。
+- **回归**：`physics2d_regression` 的弱 hash **`588d30e70f9b4ddd`** 在 W7（岛屿/休眠/三求解模式）
+  全部改动后**保持不变**（分组求解逐位等价、回归场景 `allowSleep=false` 保持连续动力学）。
 
 ## 🗺️ Roadmap
 
@@ -174,24 +196,31 @@ Broad phase 面板可在 Auto/None/BruteForce/SAP 间实时切换。
 | W4 | SAT + 裁剪式 Manifold + SATCache + BoxStack 初版 | ✅ |
 | W5 | 摩擦/warm starting/split impulse + **10 方块堆叠 10 s 稳定**（tag `v0.5-stable-stack`） | ✅ |
 | W6 | BruteForce + SAP 宽相 + **2000 物体 7.8x 加速** + bench 量化 + headless 回归（tag `v0.6-sap`） | ✅ |
-| W7 | 岛屿休眠 + demo 集（Dominoes/IslandSleep500）+ 冷热拆分 | ⬜ |
-| W8 | 文档/性能表/面试准备 | ⬜ |
+| W7 | 岛屿分区/按岛求解 + **整岛休眠（500 物体休眠后 1.73x）** + Dominoes/IslandSleep500 + 单步慢放（tag `v0.7-island-sleep`） | ✅ |
+| W8 | 文档/性能表/GIF/面试准备 + 可选 block solver | ⬜ |
 
 完整验收标准见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
-## ⚠️ 已知限制（Week 1-6）
+## ⚠️ 已知限制（Week 1-7）
 
 - **30:1 单列高塔在默认 8 速度迭代下会塌**：PGS 每帧要沿 30 层传递支撑，8 次迭代的传播预算不足
   （10 盒是 8 迭代的验收场景；30 盒需要 ~32 次速度迭代才能站住）。同理，**金字塔底部承载 16+
   个盒时会有超出 10mm 的稳态穿透**（载荷/迭代预算属性，不是 bug；Pyramid200 默认取 16 层并在
   README 给出层数-穿透表）。
-- `Body` 仍为单一结构（内含冷/热分区 + W5/W6 追加的热字段），冷热拆分顺延到 Week 7
-  （W4→W5→W6→W7，见偏差登记）。
+- **入睡速度受残余抖动限制**：10 盒塔需要 ~859 步（14.3 s）才满足 0.5 s 连续安静窗；更薄的立牌
+  （<0.2 m）在当前逐点 PGS 下几乎无法入睡。根因是 2 点接触逐点求解的顺序偏差，正解是
+  **2 点接触 2×2 block solver（W8 技术债）**；本仓库没有为了数字好看而调大 `kSleepLinearTolerance`。
+- **`Body` 仍为单一结构**（内含冷/热分区 + W5-W7 追加的热字段）：`BodySim`/`BodyState` 拆分顺延到
+  W8（可选）——W7 的测量表明该规模下"岛内打包"反而慢 18%，说明 body 数组本就 cache 友好；应先有
+  profiling 数据证明布局是热点再重构。
+- **按岛求解的 body 打包默认关闭**（`packIslandBodies=false`）：Release 实测 0.82x（见上），
+  保留为 opt-in。
 - 碰撞形状只有凸多边形（≤8 顶点）/圆/无限平面；不支持凹多边形（需拆分）、CCD。
 - 测试台需要可用的 OpenGL 上下文；无显示环境用 `--smoke`。
-- Tracy 剖析仅保留零成本钩子，正式接入在 W7-W8。
-- **本机增量构建不可信**：中文 locale MSVC 的 `/showIncludes` 让 Ninja 记录不到头文件依赖，
-  改 header 后请用 `build.ps1 -Clean` 或 clean build（详见 `docs/dev-setup.md` §6）。
+- Tracy 剖析仅保留零成本钩子，正式接入在 W8。
+- **本机增量构建不可信**：中文 locale MSVC 的 `/showIncludes` 让 Ninja 记录不到头文件依赖，可能
+  因类布局不一致触发 HEAP CORRUPTION；`build.ps1` 已自动检测 header 比 obj 新并强制 clean-first
+  （详见 `docs/dev-setup.md` §6）。
 
 ## 📚 参考
 

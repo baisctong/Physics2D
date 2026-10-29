@@ -164,7 +164,7 @@
   W6 无 `DetachShape`、bench "真实重叠"口径 = tight AABB、**冷热拆分三次顺延到 W7**
   （全部登记在 `docs/dev-interfaces.md` 第 5 节）。
 
-## Week 7 · 岛屿与休眠 + 打磨
+## Week 7 · 岛屿与休眠 + 打磨 ✅
 
 | 日 | 任务 | DoD |
 | --- | --- | --- |
@@ -176,7 +176,32 @@
 | D6 | 暂停/单步/慢放 | 逐帧观察 manifold |
 | D7 | Contact 调试面板完整版 + tag `v0.7-island-sleep` | — |
 
-要填：R9/R10/R14/R17，**R15 冷热拆分（W4→W5→W6→W7 三次顺延）**，R11 Tracy（可选）。
+要填：R9/R10/R14/R17，**R15 冷热拆分（W4→W5→W6→W7→W8 顺延）**，R11 Tracy（可选）。
+
+**Week 7 验收结果（2026-10-29，tag `v0.7-island-sleep`）**
+- **岛屿（P13 D1）**：`Solver/Island.{h,cpp}` 显式栈 DFS + forward-star 邻接 + 规范排序；
+  只有 dynamic-dynamic contact 是边（static/kinematic 是边界，不传递连通性）；3 独立堆 → 3 岛、
+  桥接后 → 2 岛、500-body 长链 → 1 岛/499 contact 不溢出。
+- **按岛求解（D2）**：三模式（flat / **grouped-direct（默认）** / grouped-packed（opt-in））**逐位一致**：
+  两岛 276 次 + 密集单岛 21,760 次 float 比较 0 差异；World 级 300 步 × 469 floats/步 0 mismatch；
+  **回归弱 hash 不变**。分组打包保留但默认关闭：Release 实测 packed 比 flat 慢 18%
+  （400 bodies 的 Body 数组本就装得进 L2），默认 grouped-direct 与 flat 差 2–7%。
+- **休眠/唤醒（D3/D4）**：整岛原子休眠（`UpdateSleep`）、休眠岛跳过 AABB 更新/窄相/求解但保留 proxy、
+  双方休眠 contact 复用上一帧、宽相邻近唤醒（共享 wake pass，宽相 on/off 等价）；4 个外部唤醒入口
+  整岛唤醒；休眠后 100 步状态与接触冲量**逐位不变**。
+- **性能（D5，真实数字）**：IslandSleep500（500 盒/100 岛，Release 600 步）frame 105 (1.75 s) 全睡；
+  Step **0.4554 ms → 0.2627 ms，加速 1.73x**（debug 4.95→2.94ms，1.69x）；10 盒塔 debug 3.30x
+  （26.5 vs 87.5 µs/step，sleep step 859——残余抖动所致，阈值保持 0.01，block solver 为 W8 技术债）。
+- **多米诺**：Release 600 步 woken_after_sleep 20/20、fallen 20/20、chain_reach 20、first_skipped=-1。
+- testbed：Dominoes/IslandSleep500 demo、islands/awake/sleeping 面板、Space 暂停 / `.` 单步 /
+  1/2/3 慢放、Contact 冲量柱状条与摩擦锥占用。
+- 测试 **354**（debug/sanitize；release 355）全绿；三 preset 0 警告；
+  clean build+ctest：debug 55.4s / release 53.5s / sanitize 82.9s；
+  测试 exe 工作区外运行 353/353 gtest 全过（15 个 death test 真正执行）。
+- 偏差：static/kinematic 不传递岛屿连通性（设计文档措辞歧义，按"3 独立堆=3 岛"解释）、
+  proximity wake 从 UpdateBroadPhase 挪到 UpdateContacts 共享 pass、`packIslandBodies` 默认 false、
+  休眠阈值不调大（sleep onset 859 步如实记录）、Dominoes 用 0.30×1.0 m 宽牌、R15 冷热拆分顺延到 W8
+  （全部登记在 `docs/dev-interfaces.md` 第 5 节）。
 
 ## Week 8 · 文档、简历、面试准备
 
@@ -190,7 +215,9 @@
 | D6 | 简历 bullet + 面试演练 | 能闭卷讲 20 分钟 |
 | D7 | tag `v1.0-release` + Release | — |
 
-要填：R11 Tracy 完整接入（如时间允许）、W01-W04 文档提示词。
+要填：R11 Tracy 完整接入（如时间允许）、R15 冷热拆分（**只有拿到 profiling 数据证明 body 内存布局是热点才做**；
+W7 实测"岛内打包"在 400 体规模反而慢 18%，说明该规模下 body 数组本就 cache 友好）、
+2 点接触 2×2 block solver（消除薄片残余抖动 → 更快入睡，W7 卡点 3 的正解）、W01-W04 文档提示词。
 
 ## 降级路径（时间不够时按序砍）
 

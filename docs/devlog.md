@@ -518,4 +518,133 @@
    不要用调迭代数掩盖。
 5. 宽相只决定"谁进窄相"；窄相/求解器不应知道宽相存在。切宽相物理不一致时先查顺序/去重，别改窄相。
 
+---
+
+## Week 7 · 岛屿、按岛求解与整岛休眠
+
+**完成**
+- **岛屿构建（P13 D1）**：新增 `include/physics2d/Solver/Island.h` + `src/Solver/Island.cpp`。以 contact 为边的
+  动态体连通分量：**只有 dynamic-dynamic contact 是边**，static/kinematic 是边界（它们的 contact 仍随岛
+  求解，但不入岛、不传递连通性——否则同一地面上所有堆叠会被地面合并成一个岛，岛屿/休眠失效）；
+  无 contact 的 dynamic body 是单例岛（休眠计时需要）。DFS 用**显式 vector 栈**（500-body 长链实测
+  不溢出；P13 要求 2000 body），forward-star 邻接（2×C 个 int），两遍升序扫描产出规范序
+  （岛按最小成员、岛内 bodies 升序、contacts 按全局 contact 序），整体 O(N+C)。
+- **按岛求解（P13 D2）**：`ContactSolver` 在 World 装入分区后按岛序 `Prepare`/`WarmStart`/`SolveVelocity`/
+  `SolvePosition`；solver-dev 实测后改为**三种模式**：flat（无分区，Week 6 原路径）、**grouped-direct
+  （默认：按岛迭代但直接读写 Body，不拷贝）**、grouped-packed（设计文档 3.3/6.5 的"岛内热数据打包"，
+  保留为 opt-in）。**三模式在相同初始状态下逐位一致**：两岛场景 276 次 float 比较、密集单岛
+  （400 bodies/760 contacts）21,760 次 float 比较，全部 0 差异；World 级 A/B（grouped vs flat）300 步
+  × 469 floats/步逐位一致。**回归弱 hash `588d30e70f9b4ddd` 保持不变**（分组求解是纯顺序变换）。
+- **整岛原子休眠/唤醒（P13 D3/D4）**：`World::UpdateSleep` 按岛累计 `sleepTime`（每个 dynamic body 的
+  `|v|<kSleepLinearTolerance && |w|<kSleepAngularTolerance`），岛内全部超过 `kSleepTimeThreshold` →
+  **整岛** `isAwake=false`、真实速度与伪速度清零；`UpdateBroadPhase` 对休眠 body 跳过 AABB 更新但
+  **保留 proxy**；`UpdateContacts` 对"双方都不 awake"的 candidate pair **复用上一帧 contact**（不跑窄相，
+  保留岛图/暖启动数据）；`UpdateContacts` 开头的共享 wake pass 做**宽相邻近唤醒**（awake 物体的 fat AABB
+  与休眠岛 proxy 重叠 → 整岛唤醒，宽相/fallback 两条路径同序）；外力/冲量/SetTransform/SetVelocity 等
+  入口通过 `WakeIslandOfBody` **整岛原子唤醒**。`GetIslandCount()`/`GetSleepingBodyCount()` 接真实值。
+- **testbed（P13 D5/D6/D7）**：新增 `Dominoes`（20 块 0.30×1.0 m 骨牌，smoke 第 60 步自动推第一块）与
+  `IslandSleep500`（500 盒 = 100×5 塔，自动测量"唤醒期 vs 全休眠期"Step 耗时并打印加速比）；
+  `SceneBuilders` 增加 `CreateDominoChain`/`CreateBoxGrid`；Status 面板加 islands/awake/sleeping；
+  Solver 面板加 Islands & sleeping 段（enableSleeping/useIslandSolving 勾选、Wake all）；**Space 暂停、
+  `.` 单步、1/2/3 = 1x/0.5x/0.25x 慢放**（ImGui 捕获键盘时禁用）；Contact 面板加每接触点累计法向/切向
+  冲量的 ProgressBar 与摩擦锥占用百分比；smoke 行加 `islands/awake/sleeping`。
+- **工程护栏**：`scripts/build.ps1` 增加 stale-object 自动防护（见下面卡点 1）。
+
+**卡住的地方（现象 → 排查 → 根因 → 修复）**
+1. **`HEAP CORRUPTION DETECTED` 弹窗（看起来像内存越界，其实不是）**
+   - 现象：core-dev 在 `build/core7` 跑测试时 CRT 弹窗 "wrote to memory after end of heap buffer"。
+   - 排查：① 全新目录 `build/asan7`（sanitize preset = MSVC ASan）全量重编 → **没有任何 ASan 报告**，
+     只有 5 个功能测试失败；② 该弹窗出现在"W7 改了 `ContactSolver.h` 的 private 成员之后"的增量构建里；
+     ③ 本机中文 MSVC 的 `/showIncludes` 前缀与 CMake 写入的 UTF-8 前缀字节不匹配 → Ninja depfile 为空
+     → 只改 header 不重编 → `World.cpp.obj`（旧 `sizeof(ContactSolver)`）与新 `ContactSolver.obj`
+     （新类大小）混链 → `make_unique`/析构尺寸不匹配 → 堆损坏。
+   - 根因：**本机增量构建不可信**（W6 已记录的环境坑），不是 W7 代码越界。
+   - 修复：`scripts/build.ps1` 在 Windows 上自动检测"任意 header 比 build 目录内最新 obj 新"→ 打印
+     WARNING 并自动 `--clean-first`。此后所有 agent 的增量构建自动安全；canonical 周验收本来就 clean build。
+2. **proximity wake 放错位置破坏"无宽相 vs 宽相逐位一致"**
+   - 现象：三个 W6 宽相等价性测试（fallback/BF/SAP 300 步逐位一致）在 step 87 分歧（正是休眠开启时刻）。
+   - 排查：proximity wake 最初写在 `World::UpdateBroadPhase`，而该函数在 `m_broadPhase == nullptr` 时
+     提前 return → 无宽相 fallback 世界永不被邻近唤醒，装宽相世界会唤醒 → 物理分歧。
+   - 修复：把 wake pass 挪到 `UpdateContacts` 开头（宽相路径用 `m_broadPhasePairs`、fallback 用同样的
+     fat-AABB 判定遍历 i<j，同一唤醒时机；语义仍在窄相之前、BuildIslands 之前同帧生效）。三个测试
+     **未改一行断言**即恢复全绿。已在 dev-interfaces 偏差表登记（任务卡原措辞是 UpdateBroadPhase）。
+3. **薄骨牌永不入睡**
+   - 现象：testbed 计划的 hx=0.05 / core-dev 实测 hw=0.06 薄牌静止时 `sleepTime` 每 4–6 帧被重置。
+   - 根因：逐点 PGS 对低惯性薄片的残余力矩 → 静止抖动尖峰 maxV≈0.015 m/s > `kSleepLinearTolerance=0.01`
+     （W5 已记录 10 盒塔 jitter max 0.0248 m/s，同一机理）；**这是收敛质量问题，不是休眠规则 bug**。
+   - 处理：**不调阈值**（保持 0.01，设计文档/Box2D 同值），demo/测试改用能入睡的 0.30×1.0 m 骨牌
+     （hw=0.15、间距 1.0 m），并把"薄片抖动 → block solver 是 W8 技术债"写进注释/README。
+4. **"岛内打包"实测反而更慢 → 默认值回调**
+   - 现象：设计文档 3.3/6.5 要求"整岛 BodyState 拷进连续数组 → 求解 → 写回"，实现后 Release 实测
+     400 bodies/760 contacts 单岛、8 迭代：flat 1.741 ms / grouped-direct 1.863 ms / grouped-packed 2.122 ms。
+   - 根因：400 个 Body ≈ 80 KB，**整个 body 数组本来就装得进 L2**，每帧 O(bodies) 拷贝成本 > 局部性收益；
+     Debug 下 packed 反而快（访问放大），说明默认值必须按 Release 测量定。
+   - 处理：新增 `SolverSettings::packIslandBodies`（默认 false）；默认走 grouped-direct（与 flat 差
+     2–7%），packed 路径保留为 opt-in、被三模式位级测试持续覆盖。devlog/README 如实写"未加速"。
+5. **`-0.0` 位级 bug（休眠冻结冲量后暴露）**
+   - 现象：`DisablingWarmStartingEqualsZeroFactor` 在 W7 开始失败，first mismatch 是某 contact 的
+     `tangentImpulse`。
+   - 根因：`WarmStartSeed` 里 `inherited * 0.0f` 对负继承冲量得到 `-0.0f`，与 `useWarmStarting=false`
+     的 `+0.0f` 位不同；W5 时累计器每帧被求解重写所以从未暴露，W7 休眠冻结 ContactPoint 冲量后暴露。
+   - 修复：`inherited * factor + 0.0f`（只把 -0 归一为 +0，其他 float 位不变）。
+6. **休眠时机（诚实数据）**：10 盒塔在默认阈值下 **step 859 才整岛入睡**（不是 600）。塔 600 步时
+   已稳定（max_speed 0.007），但残余抖动尖峰需要真正的 0.5 s 连续安静窗；测试放宽到 900 步并在
+   注释记录原因，**不调 `kSleepLinearTolerance`**。IslandSleep500 用 5 盒塔（100 岛）实测 frame 105
+   （1.75 s）全睡；10 盒塔布局需 ~1452 帧（与 10 盒塔 859 步一致）。
+
+**数据（测量条件：Windows 11 22631 / i7-12650H / MSVC 19.44 / CMake 3.31.12 / Ninja 1.12.1）**
+- **岛屿**：3 个互不接触的堆叠 → 3 岛；桥接两个堆叠 → 2 岛；同一 static 地面上的独立堆叠不合并
+  （地面 islandId=-1）；500-body 长链 → **1 岛 / 499 contact**，显式栈不溢出；islandId 稠密规范。
+- **按岛求解位级一致**：flat / grouped-direct / grouped-packed 三模式，两岛场景 276 次 float 比较、
+  密集单岛 21,760 次 float 比较**全部 0 差异**；World 级 grouped vs flat 300 步 × **469 floats/步**
+  逐位一致；**回归弱 hash `588d30e70f9b4ddd` 与 exact `f4390ef86c075a04` 不变**（golden 未改）。
+- **三模式 Release 耗时**（400 bodies/760 contacts 单岛、40 reps、i7-12650H）：
+  8 迭代 flat **1.741 ms** / grouped-direct **1.863 ms (0.93x)** / grouped-packed **2.122 ms (0.82x)**；
+  32 迭代 7.425 / 7.590 (0.98x) / 7.987 (0.93x)。默认 grouped-direct，packed opt-in（见卡点 4）。
+- **休眠**：
+  - 10 盒塔：sleep step **859**、sleeping=10/awake=0、contacts=10、top y 9.47815；**之后 100 步状态与
+    接触冲量逐位不变**；proxy 保留 11 个；debug Step **26.5 µs/step（asleep） vs 87.5 µs/step（awake），
+    3.30x**；`enableSleeping=false` 时永不休眠。
+  - **IslandSleep500（500 盒 / 100 岛，Release 600 步）**：**frame 105 (1.75 s) 全睡**；唤醒期平均
+    Step **0.4554 ms** → 全休眠 **0.2627 ms**，**加速 1.73x**（debug 同场景 4.95 → 2.94 ms，1.69x；
+    仍保留宽相 sweep 与休眠接触复用，故非数量级）。
+  - 唤醒 4 入口（ApplyLinearImpulse/SetLinearVelocity/SetTransform/ApplyForce）均**立即整岛唤醒**；
+    邻近唤醒（probe 进入休眠塔 fat AABB、无几何接触）整岛唤醒，宽相 on/off 两条路径都验证；
+    `allowSleep=false` 的成员使整岛保持 awake。
+- **多米诺（Release 600 步）**：**woken_after_sleep 20/20、fallen 20/20、chain_reach 20、
+  first_skipped = -1**（无任何骨牌被跳过）；首醒步序列呈沿行波传播（core-dev 12 块场景实测
+  0 5 23 52 75 93 108 123 138 152 166 180）。
+- **8 个 demo smoke（canonical debug build，300 步，含 islands/awake/sleeping）**：
+  FallingBall `bodies=2 islands=1 sleeping=1`；SphereStack `4/1/3`；BoxStack `11/1/awake=10`
+  （塔仍醒，900 步才睡）；FrictionRamp `2/1/1`；Pyramid200 `137/1/awake=136`；
+  StressBenchmark `401/4/awake=400`；Dominoes `21 bodies/12 islands`；
+  IslandSleep500 `501 bodies/100 islands/sleeping=500 contacts=500 max_pen=3.983mm avg_frame_ms=9.98(debug)`。
+- **宽相 A/B 仍逐位一致**（W6 属性保持）：BoxStack `--broadphase none|bf|sap` 300 步 body/contact 输出
+  行 **SHA-256 相同**；BoxStack 600 步 max_pen **3.893 mm**、塔站立（max_speed 0.007，尚未入睡）。
+- **测试/三 preset**：debug/sanitize **354 个 ctest 用例**（338 gtest passed + 15 sandbox death-test skip
+  + 1 `regression_default`）、release **355**；项目代码 **0 warning**；clean 配置+构建+ctest：
+  debug **55.4s** / release **53.5s** / sanitize(ASan) **82.9s**。测试 exe 复制到工作区外运行 →
+  **353/353 gtest 全过**（15 个 death test 真正执行；过程中用这把尺子抓出了 W7 的 static-static skip 回归）。
+
+**下周（W8，文档与交付周）**
+1. `docs/profiling.md`（所有性能表 + Tracy 截图 + 环境）、`docs/math.md`（SAT/冲量/摩擦锥/split impulse
+   推导）、架构总图升级；
+2. README 完整版 + GIF（10 盒稳定 / 2000 物体 SAP / 500 物体休眠 / 多米诺唤醒）+ 已知限制清单；
+3. 边界测试补强（退化多边形、零密度、极大速度、超长薄条）与所有崩溃点 assert/文档；
+4. 简历 bullet（10.3 模板）与面试问答演练（10.4 清单）；tag `v1.0-release`；
+5. 若时间允许：**2 点接触 2×2 block solver**（能消除薄片残余抖动 → 休眠更快，W7 卡点 3 的正解）、
+   `BodySim`/`BodyState` 冷热拆分（W4→W5→W6→W7→W8 顺延；W7 的测量表明"打包"本身在 400 体内不划算，
+   拆分应先有 profiling 数据再动）、Tracy 正式接入。
+
+**给未来的自己的提醒**
+1. **顺序就是物理**：岛屿分组之所以能保持 bit-identical，是因为"岛间约束不共享 body → 更新可交换、
+   岛内相对顺序保持"。任何改变岛内顺序/跨岛交错的改动都会破坏 hash，先想清楚再动。
+2. **休眠是"整岛原子"**：单 body 休眠/唤醒会在岛边界留下半冻状态（穿模）；休眠岛必须保留 proxy 与
+   上一帧 contact（否则岛图丢失、无法被邻近唤醒）。
+3. **不要为了漂亮的数字调休眠阈值**：10 盒塔 859 步入睡是残余抖动的诚实结果，正解是 block solver。
+4. **本机增量构建永远是坑**：build.ps1 现在会自动 clean-first，但 canonical 周验收仍然必须 clean build；
+   工作区外跑一次完整 gtest（含 death tests）是发现"被 sandbox SKIP 掩盖的契约回归"的唯一可靠方法。
+5. **默认值必须按 Release 测量定**：packed 求解在 Debug 下更快、Release 下反而慢 18%——只信 Release。
+
+
 

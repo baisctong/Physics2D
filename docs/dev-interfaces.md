@@ -45,16 +45,16 @@
 | R5 | 窄相数据 | **W2/W4 已实现**：圆族解析 + `CollideCircleAndPolygon`/`CollidePolygonAndCircle`/`CollidePolygonAndPlane`/`CollidePlaneAndPolygon` + `SAT`/`Clipping`/`CollidePolygons`/`FindMaxSeparation`/`ClipSegmentToLine`/`SATCache` | — | 无（SAT 路线完成；以后只有 DynamicAABBTree / 关节等扩展） | 9 种位姿、面-面 2 点/顶点-面 1 点、交换 A/B 法线反向 + Key 集合同、旋转 100 帧 Key 稳定 |
 | R6 | Contact 持久化 | **W2 已实现 + W5 接入求解器**：`World::UpdateContacts` 按 body 对 + `ContactID::Key()` 继承每点累计冲量（`m_previousContacts`），`isPersistent` 就位；W5 的 `Prepare` 用它播种 warm start（`isPersistent=false` 的点从精确 0 开始） | — | 无。匹配-继承逻辑保持 World 内部私有函数（`MatchAndInheritImpulses`），契约通过 `GetContacts()` 公开视图测试；不新增公共 API | 缓慢旋转 100 帧同一接触 Key 不变（W4 D5）；`isPersistent` 语义 = 全部新点都匹配到前帧点 |
 | R7 | 窄相阶段 | **W2 已实现 + W6 换源**：`World::UpdateContacts()` 的候选对来源 = 已安装宽相的规范化 pair 列表；无宽相时退回 W2 的 O(N²) 枚举。两条路径共用 `World::CreateContactForPair`（同一窄相分派，不会漂移）；窄相函数表（3×3 分派）仍显式 switch（未抽函数指针表） | — | 无（函数指针表是可选优化） | 三路（无/BF/SAP）逐位一致；候选对与 fallback 接触列表一致 |
-| R8 | 求解器阶段 | **W3 法向 + W5 完整**：`Solver/ContactSolver.{h,cpp}`（Prepare/WarmStart/SolveVelocity）+ `ContactSolverPosition.cpp`（split impulse 位置层）；摩擦锥累计钳制、warm starting（完整继承，factor 只作实验旋钮）、restitution bias、Baumgarte 对比基线；`World::PrepareConstraints(dt)`/`WarmStart`/`SolvePositionConstraints(dt)` 已接线 | — | 无（无关节/无 block solver；W6 只动宽相，不碰求解器） | 10 方块堆叠 10 s 稳定（穿透 4.22 mm）、摩擦角 20 格扫描、`accN>=0` 1000 帧、1000 帧摩擦锥 0 violation、split impulse 真实速度逐位不变 |
-| R9 | 岛屿/休眠 | `World::BuildIslands()`、`UpdateSleep()` 为空；`Body::islandId`、`sleepTime`、`allowSleep`、`World::GetIslandCount()`、`GetAwakeBodyCount()` 已留 | W7 | `Solver/Island.{h,cpp}`、`Sleep`；整岛原子睡眠/唤醒 | 3 岛/合并岛测试；sleep 后状态逐位不变；多米诺连锁唤醒 |
-| R10 | 接触/岛统计 | `World::GetContactCount()` **W2 已接真实计数**；`GetShapeCount()` 已加；`GetIslandCount()` 仍返回 0（W7） | W7 | 岛屿统计接真实值；回归输出 awake 曲线 | ImGui 面板数字与实际一致 |
+| R8 | 求解器阶段 | **W3 法向 + W5 完整 + W7 按岛**：`Solver/ContactSolver.{h,cpp}`（Prepare/WarmStart/SolveVelocity）+ `ContactSolverPosition.cpp`（split impulse 位置层）+ `Island.cpp`（分区）；摩擦锥累计钳制、warm starting（完整继承，factor 只作实验旋钮）、restitution bias、Baumgarte 对比基线；三求解模式（flat / grouped-direct 默认 / grouped-packed opt-in，逐位一致）；`World::PrepareConstraints(dt)`/`WarmStart`/`SolvePositionConstraints(dt)` 已接线 | W8（可选） | 2 点接触 2×2 block solver（消除薄片残余抖动 → 更快入睡；W7 已记录为技术债）；关节未做 | 10 方块堆叠 10 s 稳定；摩擦角 20 格扫描；三求解模式 21,760 次 float 比较 0 差异；回归 hash 不变 |
+| R9 | 岛屿/休眠 | **W7 已完成**：`Solver/Island.{h,cpp}`（显式栈 DFS、forward-star、规范序、static/kinematic 边界）+ `World::BuildIslands`（islandId/规范分区）+ `World::UpdateSleep`（整岛原子计时/入睡）+ `WakeIslandOfBody`（整岛唤醒：外力/冲量/transform + 宽相邻近）；休眠岛跳过 AABB 更新/窄相/求解但保留 proxy，休眠-休眠 pair 复用上一帧 contact | — | 无（关节未做；整岛求解顺序变更已由位级测试锁定） | 3 岛/合并岛；500-body 链 1 岛；sleep 后 100 步状态与接触冲量逐位不变；4 个唤醒入口 + 邻近唤醒；多米诺 20/20 无跳过 |
+| R10 | 接触/岛统计 | **W7 已完成**：`GetIslandCount()`（真实岛数）、`GetSleepingBodyCount()`（dynamic 休眠数）、`GetAwakeBodyCount()`；testbed Status 面板显示 islands/awake/sleeping | — | 无 | ImGui 面板数字与 World 一致（IslandSleep500：100 岛 / sleeping 500） |
 | R11 | 性能剖析 | `Core/Profiler.h` 宏已定义（默认空）；CMake 选项 `PHYSICS2D_ENABLE_TRACY`/`PHYSICS2D_TRACY_ROOT` 已留 | W6/W8 | 打开 Tracy、在 8 个 Step 阶段与 SAP 排序/扫描埋点；`Plot` awake/contact 数 | Tracy 时间线与 README 数字对应 |
 | R12 | headless 回归 | **W6 骨架已完成**：`tests/regression/regression_main.cpp` + `physics2d_regression` target（只 link core）+ `tests/regression/golden/default_600.txt` + CTest `regression_default` + CI `regression` job；hash = FNV-1a **量化弱 hash**（quantum 1e-5，跨编译器/平台可移植）作为判定值，exact float-bit hash 仅信息打印；退出码 0 匹配 / 1 不匹配 / 2 用法或 IO 错误 | W7（可选增强） | `--frames` 模板化多场景 golden（W7 的 Pyramid200/休眠场景）；`scripts/compare_hash.py`（当前不需要，C++ 单文件更简单） | `regression_default` 在 debug/release/sanitize 三 preset 的 ctest 全绿；CI headless job 跑同一命令 |
 | R13 | 基准工具 | **W6 已完成**：`bench/bench_broadphase.cpp` 完整 CLI（`--broadphase brute|sap|all --bodies 50,200,500,2000 --frames --seed --json --help`）；30×30m 随机盒场景、只计 UpdateAABB+QueryPairs、前 100 帧预热、median/mean、markdown + JSON、打印环境 | — | 无（Tracy 接入在 W6-8 剩余项） | Release 实测表格进 README（N=50/200/500/2000：2.20x/4.99x/5.91x/7.64x）；小 N 交叉 N≈25–32 |
-| R14 | Demo 扩展 | **W4-W6 已完成**：`testbed/Demo.h` 基类 + demo 注册表；6 个 demo（FallingBall/SphereStack/BoxStack/FrictionRamp/**Pyramid200**/**StressBenchmark**）；`testbed/SceneBuilders.h` 抽共享场景构造；Camera 增加聚焦世界 AABB 的自适应取景 | W7 | 剩余 demo（Dominoes/IslandSleep500）与休眠可视化 | ImGui 下拉可切换；headless smoke 可跑；宽相切换物理结果不变（core-dev 的 World 级测试兜底） |
-| R15 | 冷热拆分 | `Body` 内已分「冷/热」注释区；W5 追加伪速度字段、W6 追加 `proxyId`（hot block 仍单调增长） | **W7**（W4→W5→W6→W7 三次顺延，见第 5 节偏差登记） | 拆 `BodySim`/`BodyState` 并行数组（设计文档 3.3 的"重构亮点"）；行为 hash 不变 | 全部测试通过、回归 hash 不变 |
+| R14 | Demo 扩展 | **W4-W7 已完成**：`testbed/Demo.h` 基类 + demo 注册表；**8 个 demo**（FallingBall/SphereStack/BoxStack/FrictionRamp/Pyramid200/StressBenchmark/**Dominoes**/**IslandSleep500**）；`SceneBuilders.h` 共享构造（含 DominoChain/BoxGrid）；Camera 自适应取景；暂停/单步/慢放快捷键 | W8 | 录 GIF（稳定堆叠/SAP/休眠/多米诺） | 8 个 demo smoke 全 exit 0；宽相切换物理结果不变；休眠前后 Step 对比数据进 README |
+| R15 | 冷热拆分 | **W8 可选**（W4→W5→W6→W7→W8，见第 5 节偏差登记）：W7 的"岛内打包"实测在 400 体规模反而慢 18%，说明该规模下 body 数组本就 cache 友好；拆分应先有 profiling 数据证明 body 布局是热点 | W8（可选） | `BodySim`/`BodyState` 并行数组（设计文档 3.3）；行为 hash 不变 | 全部测试通过、回归 hash 不变；profiling 数据显示收益 |
 | R16 | ContactID 对称性 | **W4 已实现**：`Key()` 不再包含 `flip` 位（flip 是朝向元数据），同一物理接触 A/B 交换后 Key 不变；SAT 的 reference/incident 归属与 flip 位按此约定填写；World 的持久化匹配按 Key 工作 | — | 无 | 交换 A/B 单测 Key 集合相同；旋转 100 帧 Key 只在特征切换帧变化 |
-| R17 | 时间步/插值 | `StepAccumulator` 已实现 + `GetAlpha()` | W7 | 渲染插值（可选） | 视觉顺滑，不影响物理确定性 |
+| R17 | 时间步/插值 | `StepAccumulator` 已实现 + `GetAlpha()`；testbed 已有暂停/单步/慢放（Space / `.` / 1-2-3） | W8（可选） | 渲染插值（用 alpha 在两步之间插值渲染） | 视觉顺滑，不影响物理确定性 |
 | R18 | 求解器参数暴露 | `SolverSettings` 全部字段 + `World::SetSolverSettings` 已实现；**W5 完成 DebugUI 实时面板**（迭代数/warmFactor/useWarmStarting/useSplitImpulse/β/slop/gravity/linearSlop/maxLinearCorrection/useSatCache）+ Contacts 调试面板 + 状态面板（Step 耗时） | — | 无 | 拖滑条不崩、无需重启；10 盒掉到 3 迭代会明显塌、8 迭代稳定（肉眼可见） |
 
 ---
@@ -84,12 +84,12 @@
 | W4 | P04、P07 | ✅ **已完成**：`Collision/{PolygonShape,SAT,Clipping}.{h,cpp}`、`SATCache`、`CollideCircleAndPolygon`/`CollidePolygonAndPlane`（P06 剩余）、`ContactID` flip 不计入 Key、World 多边形 API/分派/cache 持久化、BoxStack demo | `World::UpdateContacts` 走 SAT；冷热拆分移到 W5（见偏差） |
 | W5 | P09、P10、P14 | ✅ **已完成**：`Solver/ContactSolver.cpp` 扩展（摩擦锥、warm start、Baumgarte 对比基线）、新增 `Solver/ContactSolverPosition.cpp`（split impulse 伪速度位置层）、`Body` 追加伪速度字段、`World` 接线与 `TEMPORARY` 位置推出删除、DebugUI Solver/Contacts/状态面板、FrictionRamp demo、W4 崩塌基线测试改稳定期望；`Body`→`BodySim`/`BodyState` 冷热拆分二次顺延到 W6（见偏差） | `World::WarmStart`、`World::SolvePositionConstraints(dt)`、`World::PrepareConstraints(dt)` |
 | W6 | P11、P12、D04 | ✅ **已完成**：`Collision/BroadPhaseBruteForce.{h,cpp}`（参考基线）、`Collision/BroadPhaseSAP.{h,cpp}`（端点数组 + 增量冒泡 + `ValidateInternalState`）、`bench/bench_broadphase.cpp`（完整 CLI + 真实数字）、`tests/regression/`（工具 + golden + CTest + CI job）、`testbed/SceneBuilders.h` + `Pyramid200`/`StressBenchmark` demo + 宽相下拉/候选对显示；`Body::proxyId`、`Settings::kAabbMargin`；`World` 宽相接线与 pair 规范化 | `World::UpdateBroadPhase`、`World::Synchronize`（fat AABB）、`World::CreateContactForPair`、`World::GetBroadPhasePairCount` |
-| W7 | P13、P15、P16 | `Solver/{Island,Sleep}`、8 个 demo、`tests/regression/regression_main.cpp` | `World::BuildIslands`、`World::UpdateSleep`；回归 target 加进 `tests/CMakeLists.txt` |
-| W8 | W01-W04、D03 | `docs/{architecture,math,profiling}.md` 升级、README 数字表、GIF | 无（文档与验收周） |
+| W7 | P13、P15、P16 | ✅ **已完成**：`Solver/Island.{h,cpp}`（显式栈 DFS + 规范序）、`ContactSolver` 三模式按岛求解、`World::BuildIslands`/`UpdateSleep`/`WakeIslandOfBody`（整岛原子休眠/唤醒、休眠岛跳过宽相 AABB 更新/窄相/求解、宽相邻近唤醒）、`GetIslandCount`/`GetSleepingBodyCount`、`Dominoes`/`IslandSleep500` demo、暂停/单步/慢放、Contact 冲量柱状条；回归 hash 不变 | `World::BuildIslands`、`World::UpdateSleep`、`World::WakeBody`、`World::GetSleepingBodyCount` |
+| W8 | W01-W04、D03 | `docs/{architecture,math,profiling}.md` 升级、README 数字表、GIF、已知限制/边界测试、简历与面试演练 | 无（文档与验收周；可选：block solver / BodySim 拆分 / Tracy 实接） |
 
 ---
 
-## 5. 与设计文档的偏差登记（Week 1-5 实际选择）
+## 5. 与设计文档的偏差登记（Week 1-7 实际选择）
 
 | 设计文档 | 实际做法 | 理由 |
 | --- | --- | --- |
@@ -135,6 +135,13 @@
 | **W6**：回归工具 hash | 判定值用 FNV-1a **量化弱 hash**（quantum 1e-5）；exact float-bit hash 只打印 | 浮点逐位 hash 在跨编译器/平台（FMA 收缩、libm 差异）下不可靠；量化 1e-5 仍能捕获真实物理回归（穿透/位置漂移远大于 1e-5） |
 | **W6**：W6 无 `DetachShape` API | proxy 生命周期测试按"无 shape → 无 proxy；AttachShape 下一步 → 1；替换 shape → 1；DestroyBody → 释放；Clear → 0"口径；`DestroyShape` 未附着 shape 与 proxy 正交 | 冻结 API 优先：W6 不新增 detach；运行中 body 本就无法失去 shape（`DestroyShape` 对已附着 shape assert 拒绝），测试口径反映真实契约 |
 | **W6**：冷热拆分（R15）第 **三** 次顺延到 W7 | 只在 `Body` 追加了 `proxyId`（hot block），未拆并行数组 | W6 本身已经改动 hot block（`proxyId` + fat `aabb` 语义）；同一批 213 个热字段访问点如果一周内改两次，回归定位成本翻倍。W6 用"三路逐位一致 + 回归弱 hash"把行为不变钉死，W7（岛屿周，本来就要碰 body 存储）再做拆分并复用这套 hash 兜底 |
+| **W7**：岛屿连通性——static/kinematic 是否"传递约束" | **不传递连通性**：只有 dynamic-dynamic contact 是边；static/kinematic 是边界（其 contact 随岛求解但两个岛不会因为共享地面而合并） | 设计文档 §6.5/P13 措辞"能穿过它们传递约束"有歧义，但同一处 DoD 要求"3 个互不接触的堆叠 → 3 个岛"——若地面传递连通性，同一地面上所有堆叠都会合并成 1 个岛，岛屿/休眠直接失效。设计文档的"两盒叠地上同岛"例子由 box-box 接触满足。已用测试钉死（同一地面上两个独立堆叠 = 2 岛） |
+| **W7**：proximity wake 的位置 | 从任务卡措辞的 `UpdateBroadPhase` 挪到 `UpdateContacts` 开头的**共享 wake pass**（宽相路径遍历 `m_broadPhasePairs`，fallback 遍历 fat-AABB 的 i<j；同一唤醒时机） | `UpdateBroadPhase` 在 `m_broadPhase == nullptr` 时提前 return，把 wake 放那里会让"无宽相 fallback 世界"永远不被邻近唤醒，破坏 W6 的三路逐位一致（实测 step 87 分歧）。挪到共享路径后三个 W6 等价性测试**未改断言**即恢复 |
+| **W7**：设计文档 3.3/6.5 的"整岛 BodyState 打包到连续数组" | **实现但默认关闭**（`SolverSettings::packIslandBodies=false`）；默认 `grouped-direct`（按岛序迭代、直接读写 Body）；`grouped-packed` 保留为 opt-in 并被位级测试覆盖 | Release 实测（400 bodies/760 contacts 单岛、40 reps、8 迭代）：flat 1.741 ms / grouped-direct 1.863 ms（0.93x）/ **packed 2.122 ms（0.82x，反而慢 18%）**。400 个 Body ≈ 80 KB 本就装得进 L2，每帧 O(bodies) 拷贝成本 > 局部性收益；Debug 下 packed 反而快（访问放大），说明默认值必须按 Release 定。岛屿的真实收益是休眠跳过与多岛剔除（IslandSleep500 1.73x） |
+| **W7**：休眠阈值 0.01 m/s 与"10 盒塔 600 步入睡" | 阈值保持 `kSleepLinearTolerance=0.01`（设计文档/Box2D 同值）；10 盒塔实测 **step 859** 才整岛入睡，测试放宽到 900 步并在注释/README 记录原因 | 静止残余抖动尖峰（逐点 PGS 对 2 点接触的顺序偏差，W5 已实测 jitter max 0.0248 m/s）会重置 sleepTime；正确修法是 2 点接触 2×2 block solver（W8 技术债），不是调大阈值把数字做漂亮 |
+| **W7**：Dominoes 骨牌尺寸 | 用 **0.30×1.0 m（hw=0.15）**，不是任务卡示例的 hx=0.05 薄牌 | 0.12 m 宽薄牌静止抖动 maxV≈0.015 m/s > 0.01 阈值 → 永不入睡，无法演示"睡眠 → 推倒 → 连锁唤醒"；0.30×1.0 实测 32 步入睡且 12/12/20/20 连锁唤醒无跳过 |
+| **W7**：`ContactSolver` 的休眠跳过谓词 | "双方都 `!isAwake`" 收窄为"双方都 `!isAwake` 且非 static-static" | static body 自 W1 起就是 `isAwake=false`，宽谓词会把 **static-static 非法输入**也跳过 → W5 契约 death test `StaticStaticContactAssertsOnNonPositiveMass` 不再 assert（工作区外跑完整 gtest 才暴露，sandbox 会 SKIP death test）。收窄后契约保持 |
+| **W7**：冷热拆分（R15）第 **四** 次顺延到 W8（可选） | 不做 `BodySim`/`BodyState` 并行数组 | W7 的 packed 测量（0.82x）直接否定了"body 布局是当前热点"的假设：该规模下 body 数组本就 cache 友好，每帧拷贝反而慢。正确顺序是先有 profiling 数据（Tracy，W8）证明 body 布局是热点，再做这项纯重构；否则只是把 213 个访问点改一遍、无收益、回归风险大 |
 
 ---
 
@@ -176,3 +183,18 @@
   不允许出现"只在 QueryPairs 之后才一致"的实现。
 - **回归 hash 纪律**：`tests/regression/golden/default_600.txt` 的弱 hash 只在**有意的物理/场景变更**
   时更新，且必须在 devlog 写 old/new 与原因；纯重构（宽相切换、BodySim 拆分、排序优化）hash 不变。
+
+### W7 起生效的岛屿/休眠不变量（改 World/求解器前先核对）
+
+- **分组求解必须逐位等价**：岛屿分区是规范序（岛按最小成员 body slot、岛内 bodies 升序、contacts 按
+  全局 contact 序）；`flat` / `grouped-direct` / `grouped-packed` 三种模式在同一初始状态下必须产生
+  逐位相同的 body 状态与 contact 累计冲量。改岛序/岛内顺序前先想清楚这一点。
+- **休眠是整岛原子状态**：不允许单 body 冻结/唤醒（岛边界穿模）；休眠岛必须保留 broad-phase proxy
+  与上一帧 contact（否则岛图丢失、无法被邻近唤醒）；休眠 body 的真实速度、伪速度必须为 0。
+- **休眠岛零工作**：AABB 更新、窄相、warm start、速度/位置求解全部跳过；其 `ContactPoint` 累计冲量
+  冻结不动，唤醒后继续 warm start（这会把 `-0.0` 之类的位级问题暴露出来，见 W7 devlog）。
+- **唤醒路径**：外部力/冲量/SetTransform/SetVelocity 必须 `WakeIslandOfBody`（整岛）；宽相邻近
+  （awake body 的 fat AABB 与休眠岛 proxy 重叠）也必须整岛唤醒，且必须对**宽相与无宽相 fallback
+  两条路径同样生效**（wake pass 必须放在两者共享的 `UpdateContacts` 开头）。
+- **阈值不动**：`kSleepLinearTolerance`/`kSleepAngularTolerance`/`kSleepTimeThreshold` 保持设计值；
+  入睡慢是收敛质量（残余抖动）问题，正确修法是 block solver，不是调阈值。
