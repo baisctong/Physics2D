@@ -153,6 +153,29 @@ struct SolverSettings {
 
     // Reserved (Week 5): exposed for the friction/restitution experiments.
     float restitutionThreshold = kRestitutionVelocityThreshold;
+
+    // ---- Week 7: islands & sleeping ------------------------------------
+    // Island-grouped solving. The grouped order is BIT-IDENTICAL to the flat
+    // Week 6 order because constraints from different islands touch disjoint body
+    // sets (Gauss-Seidel updates commute across islands); the flag exists for the
+    // P13 A/B verification and for debugging, not because the physics differ.
+    bool useIslandSolving = true;
+
+    // Whole-island sleeping. Disable to keep every body awake (A/B measurement of
+    // the sleeping win, and regression scenes that must keep exercising
+    // continuous dynamics; per-body `allowSleep = false` is the finer control).
+    bool enableSleeping = true;
+
+    // Week 7: copy each island's hot velocity state into a contiguous scratch
+    // array before solving (design document 3.3/6.5 "cache friendly packing").
+    // Implemented and verified bit-identical, but DEFAULT OFF because the Week 7
+    // measurement says it does not pay at this scale: Release, 400 bodies / 760
+    // contacts in one island, 8 iterations -> flat 1.720 ms vs packed 2.121 ms
+    // (packed ~23% slower); at 400 bodies the whole Body array is ~80 KB and fits
+    // L2, so the O(bodies) copy cost per frame exceeds the locality gain. The
+    // packed path stays available (and is exercised by the bit-identity tests) for
+    // much larger scenes where bodies no longer fit in cache.
+    bool packIslandBodies = false;
 };
 
 } // namespace p2

@@ -14,14 +14,14 @@
 //   1. integrate forces -> velocity    1    IntegrateForces()      [done]
 //   2. broad phase update              6    UpdateBroadPhase(dt)   [done W6]
 //   3. narrow phase / contacts         2/6  UpdateContacts()       [done W2; W6 pair source = broad phase]
-//   4. island construction             7    BuildIslands()         [reserved]
+//   4. island construction             7    BuildIslands()         [done W7]
 //      solver preparation             3/5  PrepareConstraints()   [done W5: friction + warm-start seeds]
 //   5. warm start                      5    WarmStart()            [done W5]
-//   6. velocity iterations             3/5  SolveVelocityConstraints() [done W5: normal + friction]
+//   6. velocity iterations             3/5/7 SolveVelocityConstraints() [done W7: island-grouped, packed]
 //   7. integrate velocity -> position   1   IntegratePositions()   [done]
 //   8. position iterations (split imp) 5    SolvePositionConstraints(dt) [done W5: pseudo-velocity layer]
 //   9. synchronise AABB/transform      2/6  Synchronize()          [done W2; W6 adds the fat margin]
-//   10. sleep evaluation               7    UpdateSleep()          [reserved]
+//   10. sleep evaluation               7    UpdateSleep()          [done W7]
 //   11. debug validation               1    Validate()             [done]
 //
 // Stable from Week 2 on:
@@ -211,8 +211,22 @@ class World {
     [[nodiscard]] int32_t GetBodyCount() const noexcept { return m_bodyIds.GetAliveCount(); }
     [[nodiscard]] int32_t GetShapeCount() const noexcept { return m_shapeIds.GetAliveCount(); }
     [[nodiscard]] int32_t GetAwakeBodyCount() const;
-    [[nodiscard]] int32_t GetIslandCount() const noexcept;  // reserved (Week 7)
+    [[nodiscard]] int32_t GetIslandCount() const noexcept;  // Week 7: islands built this step
     [[nodiscard]] int32_t GetContactCount() const noexcept; // Week 2: m_contacts.size()
+    [[nodiscard]] int32_t GetSleepingBodyCount() const;     // Week 7: dynamic bodies asleep
+
+    // ------------------------------------------------------------------
+    // Week 7: sleeping and waking
+    // ------------------------------------------------------------------
+
+    // Wakes every body of the island `handle` belongs to. External forces,
+    // impulses and direct transform/velocity changes let the user affect a
+    // sleeping body; those calls must wake the WHOLE island (waking a single body
+    // would leave its sleeping neighbours frozen while it moves away - the island
+    // boundary clipping bug the whole-island sleep design exists to prevent).
+    // ApplyForce/ApplyLinearImpulse/SetTransform/SetLinearVelocity/SetAngularVelocity
+    // already do this automatically; this entry point is for tests/testbed.
+    void WakeBody(BodyHandle handle);
 
     // ------------------------------------------------------------------
     // Debug
@@ -235,7 +249,7 @@ class World {
     void IntegrateForces(float dt);
     void UpdateBroadPhase(float dt); // Week 6: proxy sync + canonical candidate pairs
     void UpdateContacts();           // Week 2/6: narrow phase over the candidate pairs
-    void BuildIslands();             // reserved Week 7
+    void BuildIslands();             // Week 7: canonical island partition + islandId
     void
     PrepareConstraints(float dt);    // Week 5: rA/rB, K_n/K_t, restitution + Baumgarte bias, warm-start seeds
     void WarmStart();                // Week 5: apply the seeded accumulated impulses once
@@ -243,8 +257,13 @@ class World {
     void IntegratePositions(float dt);
     void SolvePositionConstraints(float dt); // Week 5: split-impulse pseudo-velocity position layer
     void Synchronize();                      // Week 2/6: tight AABB + fat margin
-    void UpdateSleep(float dt);              // reserved Week 7
+    void UpdateSleep(float dt);              // Week 7: whole-island atomic sleeping
     void Validate() const;                   // debug-only NaN scan
+
+    // Week 7: wakes the island that contains body slot `bodyIndex` (no-op for a
+    // dead slot or a static/kinematic body, which are never island members).
+    // Uses Body::islandId + m_islandBodyIndices from the last BuildIslands.
+    void WakeIslandOfBody(int32_t bodyIndex);
 
     // Week 6: narrow-phase dispatch for ONE candidate body pair (indexA < indexB).
     // Shared by the broad-phase pair list and the O(N^2) fallback enumeration, so
@@ -297,6 +316,18 @@ class World {
     std::unique_ptr<IBroadPhase> m_broadPhase;
     std::vector<std::pair<int32_t, int32_t>> m_broadPhasePairs;
     std::vector<int32_t> m_proxyToBody;
+
+    // Week 7 island partition (canonical; contract in Solver/Island.h). Rebuilt
+    // every step by BuildIslands and consumed by the solver (non-owning pointers
+    // installed through SetIslandPartition), by UpdateSleep and by wake
+    // propagation. Both arrays are empty when useIslandSolving is false.
+    //  - m_islandBodyIndices[i]: dynamic body slot indices of island i, ascending;
+    //  - m_islandContactIndices[i]: contact indices (ascending global order) of
+    //    the contacts touching island i.
+    // Plain std::vector members on purpose: World.h must not include a Solver
+    // header (Core does not depend on Solver in its public surface).
+    std::vector<std::vector<int32_t>> m_islandBodyIndices;
+    std::vector<std::vector<int32_t>> m_islandContactIndices;
 };
 
 } // namespace p2

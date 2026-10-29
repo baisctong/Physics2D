@@ -18,8 +18,11 @@
 
 // World.h only forward-declares ContactSolver (Core must not include Solver
 // headers in its public surface); the .cpp includes it because the unique_ptr
-// destructor needs the complete type.
+// destructor needs the complete type. Week 7 adds the island partition builder
+// (Solver/Island.h): World::BuildIslands calls it and stores the plain-vector
+// result, so World.h itself stays free of Solver includes.
 #include "physics2d/Solver/ContactSolver.h"
+#include "physics2d/Solver/Island.h"
 
 #include "physics2d/Collision/Analytic.h"
 #include "physics2d/Collision/CircleShape.h"
@@ -419,6 +422,9 @@ void World::SetTransform(BodyHandle handle, Vec2 position, float angle) {
     }
     // Week 7 sleep hook: teleporting a body invalidates its sleep history. A
     // static body is always asleep - it has no velocity to integrate anyway.
+    // Waking the WHOLE island (not just this body) is what keeps the island
+    // atomic: a single woken body would move out of a frozen island boundary.
+    WakeIslandOfBody(handle.index);
     if (body->type != BodyType::Static) {
         body->isAwake = true;
     }
@@ -441,6 +447,8 @@ void World::SetLinearVelocity(BodyHandle handle, Vec2 velocity) {
     }
     Body* body = GetBodyMutable(handle);
     body->linearVelocity = velocity;
+    // Week 7: waking is ISLAND-atomic; see WakeIslandOfBody's contract.
+    WakeIslandOfBody(handle.index);
     if (body->type != BodyType::Static) {
         body->isAwake = true;
     }
@@ -458,6 +466,8 @@ void World::SetAngularVelocity(BodyHandle handle, float angularVelocity) {
     }
     Body* body = GetBodyMutable(handle);
     body->angularVelocity = angularVelocity;
+    // Week 7: waking is ISLAND-atomic; see WakeIslandOfBody's contract.
+    WakeIslandOfBody(handle.index);
     if (body->type != BodyType::Static) {
         body->isAwake = true;
     }
@@ -537,6 +547,9 @@ void World::ApplyForce(BodyHandle handle, Vec2 force, Vec2 worldPoint) {
     if (!IsValid(handle)) {
         return;
     }
+    // Week 7: an external force must wake the body's WHOLE island (P13 wake
+    // condition 1); waking a single body would leave sleeping neighbours frozen.
+    WakeIslandOfBody(handle.index);
     // Body::ApplyForce ignores non-dynamic bodies (infinite mass).
     GetBodyMutable(handle)->ApplyForce(force, worldPoint);
 }
@@ -545,6 +558,8 @@ void World::ApplyLinearImpulse(BodyHandle handle, Vec2 impulse, Vec2 worldPoint)
     if (!IsValid(handle)) {
         return;
     }
+    // Week 7: island-atomic wake (P13 wake condition 1).
+    WakeIslandOfBody(handle.index);
     GetBodyMutable(handle)->ApplyLinearImpulse(impulse, worldPoint);
 }
 
@@ -578,17 +593,18 @@ void World::Step(float dt, int32_t velocityIterations, int32_t positionIteration
 
     // Section 4.6 pipeline: the ORDER is normative. When filling the reserved
     // phases in later weeks, do not move a call - only replace its body.
-    IntegrateForces(dt);          //  1. force/gravity -> velocity            [done]
-    UpdateBroadPhase(dt);         //  2. broad phase / candidate pairs        [done W6]
-    UpdateContacts();             //  3. narrow phase / contact generation     [done W2; W6 pair source]
-    BuildIslands();               //  4. island construction                  [reserved Week 7]
+    IntegrateForces(dt);  //  1. force/gravity -> velocity            [done]
+    UpdateBroadPhase(dt); //  2. broad phase / candidate pairs        [done W6; W7 sleeping skip]
+    UpdateContacts(); //  3. narrow phase / contact generation     [done W2; W6 pair source; W7 sleep reuse +
+                      //  proximity wake]
+    BuildIslands();   //  4. island construction                  [done W7]
     PrepareConstraints(dt);       //     solver cache + warm-start seeds       [done W5]
     WarmStart();                  //  5. warm start                           [done W5]
-    SolveVelocityConstraints();   //  6. sequential impulses (normal+friction)[done W5]
+    SolveVelocityConstraints();   //  6. sequential impulses (normal+friction)[done W5; W7 island-grouped]
     IntegratePositions(dt);       //  7. velocity -> position (semi-implicit) [done]
     SolvePositionConstraints(dt); //  8. split-impulse position layer         [done W5]
     Synchronize();                //  9. transform + fat AABB                 [done W2/W6]
-    UpdateSleep(dt);              // 10. sleep evaluation                     [reserved Week 7]
+    UpdateSleep(dt);              // 10. whole-island sleep evaluation        [done W7]
     Validate();                   // 11. debug validation (NaN/Inf scan)      [done]
 }
 
@@ -644,8 +660,70 @@ int32_t World::GetAwakeBodyCount() const {
 }
 
 int32_t World::GetIslandCount() const noexcept {
-    // RESERVED (Week 7): islands only exist once the island builder lands.
-    return 0;
+    // Week 7: number of islands built by the last BuildIslands (0 when island
+    // solving is disabled or before the first Step).
+    return static_cast<int32_t>(m_islandBodyIndices.size());
+}
+
+int32_t World::GetSleepingBodyCount() const {
+    // Week 7: dynamic bodies only - static bodies are born "asleep" by design and
+    // counting them would make the sleeping readout meaningless.
+    int32_t sleepingCount = 0;
+    const int32_t bodyCount = static_cast<int32_t>(m_bodies.size());
+    for (int32_t index = 0; index < bodyCount; ++index) {
+        if (!m_bodyIds.IsValid(index)) {
+            continue;
+        }
+        const Body& body = m_bodies[static_cast<std::size_t>(index)];
+        if (body.type == BodyType::Dynamic && !body.isAwake) {
+            ++sleepingCount;
+        }
+    }
+    return sleepingCount;
+}
+
+void World::WakeBody(BodyHandle handle) {
+    if (!IsValid(handle)) {
+        return;
+    }
+    WakeIslandOfBody(handle.index);
+}
+
+void World::WakeIslandOfBody(int32_t bodyIndex) {
+    // P13 wake condition 1: an external impulse/force/transform change wakes the
+    // WHOLE island atomically. Waking one body would leave its sleeping
+    // neighbours frozen while it moves out of the island - the "island boundary
+    // clipping" bug whole-island sleep exists to prevent.
+    if (bodyIndex < 0 || static_cast<std::size_t>(bodyIndex) >= m_bodies.size()) {
+        return;
+    }
+    if (!m_bodyIds.IsValid(bodyIndex)) {
+        return;
+    }
+    Body& body = m_bodies[static_cast<std::size_t>(bodyIndex)];
+    if (body.type != BodyType::Dynamic) {
+        return; // static/kinematic bodies are island boundaries, never members
+    }
+    const int32_t islandIndex = body.islandId;
+    if (islandIndex < 0 || static_cast<std::size_t>(islandIndex) >= m_islandBodyIndices.size()) {
+        // No partition yet (first step) or island solving disabled: falling back
+        // to waking the single body keeps the call correct for the flat mode.
+        body.isAwake = true;
+        body.sleepTime = 0.0f;
+        return;
+    }
+    for (const int32_t memberIndex : m_islandBodyIndices[static_cast<std::size_t>(islandIndex)]) {
+        // Defensive: the partition is a snapshot and WakeIslandOfBody may run
+        // outside Step (external impulse after a DestroyBody), so a member slot can
+        // already be dead. Skipping it keeps the wake total and bounds-safe.
+        if (memberIndex < 0 || static_cast<std::size_t>(memberIndex) >= m_bodies.size() ||
+            !m_bodyIds.IsValid(memberIndex)) {
+            continue;
+        }
+        Body& member = m_bodies[static_cast<std::size_t>(memberIndex)];
+        member.isAwake = true;
+        member.sleepTime = 0.0f;
+    }
 }
 
 int32_t World::GetContactCount() const noexcept {
@@ -673,6 +751,13 @@ void World::Clear() {
     ReleaseBroadPhaseProxies();
     m_broadPhasePairs.clear();
     m_proxyToBody.clear();
+    // Week 7: the island partition is rebuilt every step, but the solver holds
+    // non-owning pointers into these arrays - release them before clearing.
+    m_islandBodyIndices.clear();
+    m_islandContactIndices.clear();
+    if (m_contactSolver != nullptr) {
+        m_contactSolver->ClearIslandPartition();
+    }
     m_contacts.clear();
     m_previousContacts.clear();
     m_shapes.clear();
@@ -822,13 +907,17 @@ void World::UpdateBroadPhase(float dt) {
         }
 
         if (body.proxyId < 0) {
+            // No proxy yet: insert one. This branch also covers static bodies,
+            // which are born "not awake" but must still participate in the broad
+            // phase (the ground plane is a permanent participant), and defensively
+            // a sleeping body that somehow lost its proxy.
             const int32_t proxyId = m_broadPhase->AddProxy(body.aabb);
             body.proxyId = proxyId;
             if (static_cast<std::size_t>(proxyId) >= m_proxyToBody.size()) {
                 m_proxyToBody.resize(static_cast<std::size_t>(proxyId) + 1, -1);
             }
             m_proxyToBody[static_cast<std::size_t>(proxyId)] = index;
-        } else {
+        } else if (body.type != BodyType::Dynamic || body.isAwake) {
             m_broadPhase->UpdateAABB(body.proxyId, body.aabb);
             // Keep the reverse map authoritative: even though an implementation
             // never renames a proxy, the mapping is what the callback below
@@ -837,6 +926,14 @@ void World::UpdateBroadPhase(float dt) {
                 m_proxyToBody.resize(static_cast<std::size_t>(body.proxyId) + 1, -1);
             }
             m_proxyToBody[static_cast<std::size_t>(body.proxyId)] = index;
+        } else {
+            // Week 7 (P13): a sleeping dynamic body keeps its proxy but skips the
+            // AABB refresh. Its transform is frozen (IntegrateForces and
+            // IntegratePositions skip !isAwake), so the fat AABB from the frame it
+            // fell asleep is still exact; keeping the proxy is what lets the broad
+            // phase still report its contacts (and therefore feed the proximity
+            // wake's candidate set). The proxy is removed only if the shape
+            // disappears (branch above).
         }
     }
 
@@ -865,6 +962,12 @@ void World::UpdateBroadPhase(float dt) {
     std::sort(m_broadPhasePairs.begin(), m_broadPhasePairs.end());
     m_broadPhasePairs.erase(std::unique(m_broadPhasePairs.begin(), m_broadPhasePairs.end()),
                             m_broadPhasePairs.end());
+
+    // Week 7 proximity wake (P13 condition 2) is deliberately NOT done here: it is
+    // a shared pass in UpdateContacts so the broad-phase and O(N^2) fallback paths
+    // wake sleepers on exactly the same step (that equality is what the Week 6
+    // "same physics with and without a broad phase" tests require). This phase only
+    // produces the canonical candidate list.
 }
 
 void World::UpdateContacts() {
@@ -873,20 +976,95 @@ void World::UpdateContacts() {
     m_previousContacts = std::move(m_contacts);
     m_contacts.clear();
 
+    // Week 7 (P13 wake condition 2): proximity wake, SHARED by both pair sources
+    // and evaluated on the same candidate criterion (fat-AABB overlap). An awake
+    // dynamic/kinematic body that overlaps a sleeping dynamic body wakes the
+    // sleeper's WHOLE island. Static bodies are "not awake" forever and never wake
+    // sleepers (the ground must not keep every stack alive).
+    //
+    // Why this lives here instead of UpdateBroadPhase: that phase returns early
+    // when no broad phase is installed, so a fallback World woke sleepers on a
+    // different step than a broad-phase World and the Week 6 "identical physics
+    // with and without a broad phase" guarantee broke (the W6 equivalence tests
+    // diverged at the first proximity wake). One shared pass on the canonical
+    // candidate set keeps both paths bit-identical, and it still runs before
+    // BuildIslands/the solver, so a freshly woken island is solved this step.
+    const auto proximityWakePair = [this](int32_t indexA, int32_t indexB) {
+        if (!m_bodyIds.IsValid(indexA) || !m_bodyIds.IsValid(indexB)) {
+            return; // defensive: a pair must never reference a dead slot
+        }
+        Body& bodyA = m_bodies[static_cast<std::size_t>(indexA)];
+        Body& bodyB = m_bodies[static_cast<std::size_t>(indexB)];
+        if (!Overlaps(bodyA.aabb, bodyB.aabb)) {
+            return; // same candidate filter as the broad phase (fat AABBs)
+        }
+        if (bodyA.isAwake && !bodyB.isAwake && bodyB.IsDynamic() &&
+            (bodyA.IsDynamic() || bodyA.type == BodyType::Kinematic)) {
+            WakeIslandOfBody(indexB);
+        }
+        if (bodyB.isAwake && !bodyA.isAwake && bodyA.IsDynamic() &&
+            (bodyB.IsDynamic() || bodyB.type == BodyType::Kinematic)) {
+            WakeIslandOfBody(indexA);
+        }
+    };
+
+    // Week 7: one candidate pair -> at most one contact. A pair where BOTH bodies
+    // are asleep skips the narrow phase and reuses last frame's contact instead:
+    // their transforms were frozen by IntegrateForces/IntegratePositions, so the
+    // cached manifold and accumulated impulses are still exact. Reusing the
+    // contact is not an optimisation - it keeps the sleeping island's contact graph
+    // intact (BuildIslands needs it to rebuild the partition every step) and keeps
+    // the warm-start impulses untouched (the solver skips sleeping islands, so
+    // nothing may rewrite them). Static bodies are "not awake" by construction, so
+    // a sleeping island's ground contacts take this branch too.
+    const auto appendPairContact = [this](int32_t indexA, int32_t indexB) {
+        assert(indexA >= 0 && indexB >= 0 && indexA < indexB && "World: bad candidate pair");
+        if (!m_bodyIds.IsValid(indexA) || !m_bodyIds.IsValid(indexB)) {
+            return; // defensive: a pair must never reference a dead slot
+        }
+        const Body& bodyA = m_bodies[static_cast<std::size_t>(indexA)];
+        const Body& bodyB = m_bodies[static_cast<std::size_t>(indexB)];
+        if (!bodyA.isAwake && !bodyB.isAwake) {
+            if (const Contact* previous =
+                    FindPreviousContact(m_previousContacts, bodyA.handle, bodyB.handle)) {
+                m_contacts.push_back(*previous);
+            }
+            return;
+        }
+        // At least one body is awake: run the exact narrow phase (the proximity
+        // wake pass above already woke any sleeping island this pair touches).
+        CreateContactForPair(indexA, indexB);
+    };
+
     if (m_broadPhase != nullptr) {
         // Week 6: candidate pairs were already enumerated by the installed broad
         // phase. UpdateBroadPhase canonicalised them to (i<j, sorted, deduped),
         // which is exactly the W2-W5 enumeration order - that is what keeps the
         // physics bit-identical when the broad phase changes.
         for (const std::pair<int32_t, int32_t>& pair : m_broadPhasePairs) {
-            CreateContactForPair(pair.first, pair.second);
+            proximityWakePair(pair.first, pair.second);
+        }
+        for (const std::pair<int32_t, int32_t>& pair : m_broadPhasePairs) {
+            appendPairContact(pair.first, pair.second);
         }
         return;
     }
 
-    // Fallback (no broad phase installed): the Week 2 O(N^2) enumeration. It uses
-    // the same per-pair routine, so the two pair sources cannot drift apart.
+    // Fallback (no broad phase installed): the Week 2 O(N^2) enumeration. The wake
+    // pass repeats the same loop because there is no cached pair list; the double
+    // scan is the price of keeping the wake step identical to the broad-phase path
+    // (this is the debug/tiny-scene path, not the hot one).
     const int32_t bodyCount = static_cast<int32_t>(m_bodies.size());
+    for (int32_t indexA = 0; indexA < bodyCount; ++indexA) {
+        if (!m_bodyIds.IsValid(indexA)) {
+            continue;
+        }
+        for (int32_t indexB = indexA + 1; indexB < bodyCount; ++indexB) {
+            if (m_bodyIds.IsValid(indexB)) {
+                proximityWakePair(indexA, indexB);
+            }
+        }
+    }
     for (int32_t indexA = 0; indexA < bodyCount; ++indexA) {
         if (!m_bodyIds.IsValid(indexA)) {
             continue;
@@ -895,7 +1073,7 @@ void World::UpdateContacts() {
             if (!m_bodyIds.IsValid(indexB)) {
                 continue;
             }
-            CreateContactForPair(indexA, indexB);
+            appendPairContact(indexA, indexB);
         }
     }
 }
@@ -1002,8 +1180,41 @@ void World::CreateContactForPair(int32_t indexA, int32_t indexB) {
 }
 
 void World::BuildIslands() {
-    // RESERVED (Week 7): DFS/union-find over touching dynamic bodies. Static
-    // bodies act as island boundaries and are never island members.
+    // Phase 4 (Week 7): canonical partition of the dynamic-body contact graph.
+    // The DFS itself lives in Solver/Island.cpp (iterative with an explicit
+    // stack, unit-testable without a World); this method owns the World side:
+    //  1. reset every body's islandId (-1 = not an island member);
+    //  2. build the partition from the contact list that phase 3 just rebuilt.
+    //     Sleeping islands keep their contacts alive (UpdateContacts reuses the
+    //     previous frame's contact for sleeping-sleeping pairs), so their
+    //     membership is stable across frames - required for whole-island wake;
+    //  3. stamp islandId on each dynamic member;
+    //  4. hand the arrays to the solver (non-owning pointers) for island-grouped
+    //     solving. The grouped order is bit-identical to the flat order (islands
+    //     are independent), see Solver/Island.h.
+    // With `useIslandSolving == false` the partition stays empty and the solver
+    // runs the flat Week 6 order - that is the A/B verification switch.
+    const int32_t bodyCount = static_cast<int32_t>(m_bodies.size());
+    for (int32_t index = 0; index < bodyCount; ++index) {
+        if (m_bodyIds.IsValid(index)) {
+            m_bodies[static_cast<std::size_t>(index)].islandId = -1;
+        }
+    }
+
+    if (!m_solverSettings.useIslandSolving) {
+        m_islandBodyIndices.clear();
+        m_islandContactIndices.clear();
+        m_contactSolver->ClearIslandPartition();
+        return;
+    }
+
+    BuildIslandPartition(m_bodies, m_bodyIds, m_contacts, m_islandBodyIndices, m_islandContactIndices);
+    for (std::size_t islandIndex = 0; islandIndex < m_islandBodyIndices.size(); ++islandIndex) {
+        for (const int32_t memberIndex : m_islandBodyIndices[islandIndex]) {
+            m_bodies[static_cast<std::size_t>(memberIndex)].islandId = static_cast<int32_t>(islandIndex);
+        }
+    }
+    m_contactSolver->SetIslandPartition(&m_islandBodyIndices, &m_islandContactIndices);
 }
 
 void World::PrepareConstraints(float dt) {
@@ -1117,9 +1328,129 @@ void World::Synchronize() {
 }
 
 void World::UpdateSleep(float dt) {
-    // RESERVED (Week 7): accumulate sleepTime for slow bodies and put whole
-    // islands to sleep after kSleepTimeThreshold seconds.
-    (void)dt;
+    // Phase 10 (Week 7): whole-island atomic sleeping (P13 / Section 6.5).
+    //
+    // The decision is per ISLAND, never per body: a half-asleep island would freeze
+    // one body while its neighbour keeps moving and open the classic "island
+    // boundary" hole. The qualification timer lives on each body (Body::sleepTime)
+    // so the rule is readable in a debugger; the partition is this step's (phase 4
+    // ran after the contacts were rebuilt).
+    if (!m_solverSettings.enableSleeping) {
+        // Sleeping disabled means "everything keeps running". Waking a body that
+        // was already asleep (the flag can be toggled at runtime in the testbed)
+        // makes this a true sleeping-off switch instead of a permanent freeze.
+        const int32_t bodyCount = static_cast<int32_t>(m_bodies.size());
+        for (int32_t index = 0; index < bodyCount; ++index) {
+            if (!m_bodyIds.IsValid(index)) {
+                continue;
+            }
+            Body& body = m_bodies[static_cast<std::size_t>(index)];
+            if (body.type == BodyType::Dynamic && !body.isAwake) {
+                body.isAwake = true;
+                body.sleepTime = 0.0f;
+            }
+        }
+        return;
+    }
+
+    // Flat mode (no partition: useIslandSolving == false, a scene with no dynamic
+    // bodies, or an engine state before the island DFS lands): there is no island
+    // to put to sleep atomically, so every body keeps the Week 6 continuous
+    // behaviour. That is also why the island-solving A/B test runs with sleeping
+    // OFF: sleeping is an island feature, not a solving-order feature.
+    if (m_islandBodyIndices.empty()) {
+        return;
+    }
+
+    for (const std::vector<int32_t>& members : m_islandBodyIndices) {
+        if (members.empty()) {
+            continue;
+        }
+
+        // ---- classify the island without mutating it ------------------------
+        bool allAsleep = true;
+        bool allAllowedToSleep = true;
+        bool allSlow = true;
+        for (const int32_t memberIndex : members) {
+            // Defensive: the partition is this step's snapshot, but a stale
+            // islandId can still point here when WakeIslandOfBody runs between
+            // steps after a DestroyBody. A dead/missing slot makes the island
+            // unsafe to sleep (partial sleeping would break atomicity).
+            if (memberIndex < 0 || static_cast<std::size_t>(memberIndex) >= m_bodies.size() ||
+                !m_bodyIds.IsValid(memberIndex)) {
+                allAsleep = false;
+                allAllowedToSleep = false;
+                allSlow = false;
+                continue;
+            }
+            const Body& body = m_bodies[static_cast<std::size_t>(memberIndex)];
+            if (body.type != BodyType::Dynamic) {
+                continue; // partition only contains dynamic bodies; defensive
+            }
+            if (body.isAwake) {
+                allAsleep = false;
+            }
+            if (!body.allowSleep) {
+                // A single non-sleepable member keeps the whole island awake:
+                // allowing it to stay awake inside a frozen island would clip.
+                allAllowedToSleep = false;
+            }
+            if (Length(body.linearVelocity) >= kSleepLinearTolerance ||
+                std::fabs(body.angularVelocity) >= kSleepAngularTolerance) {
+                allSlow = false;
+            }
+        }
+        if (allAsleep) {
+            continue; // already sleeping: contacts are reused, no timer work
+        }
+        if (!allAllowedToSleep || !allSlow) {
+            // The island is awake; restart the qualification window for every
+            // member (all timers move together, so the island stays atomic).
+            for (const int32_t memberIndex : members) {
+                if (memberIndex >= 0 && static_cast<std::size_t>(memberIndex) < m_bodies.size() &&
+                    m_bodyIds.IsValid(memberIndex)) {
+                    m_bodies[static_cast<std::size_t>(memberIndex)].sleepTime = 0.0f;
+                }
+            }
+            continue;
+        }
+
+        // ---- every member is slow: advance the shared qualification window ----
+        bool allTimedOut = true;
+        for (const int32_t memberIndex : members) {
+            if (memberIndex < 0 || static_cast<std::size_t>(memberIndex) >= m_bodies.size() ||
+                !m_bodyIds.IsValid(memberIndex)) {
+                continue;
+            }
+            Body& body = m_bodies[static_cast<std::size_t>(memberIndex)];
+            body.sleepTime += dt;
+            if (!(body.sleepTime > kSleepTimeThreshold)) {
+                allTimedOut = false;
+            }
+        }
+        if (!allTimedOut) {
+            continue;
+        }
+
+        // ---- whole island sleeps: freeze the motion state, keep the poses -----
+        // Clearing the real and pseudo velocities is what makes the frozen state
+        // reproducible and leak-free (no stale pseudo push from the sleep frame
+        // can survive into the wake frame); sleepTime resets so a wake starts a
+        // fresh qualification window.
+        for (const int32_t memberIndex : members) {
+            if (memberIndex < 0 || static_cast<std::size_t>(memberIndex) >= m_bodies.size() ||
+                !m_bodyIds.IsValid(memberIndex)) {
+                continue;
+            }
+            Body& body = m_bodies[static_cast<std::size_t>(memberIndex)];
+            body.isAwake = false;
+            body.linearVelocity = Vec2{0.0f, 0.0f};
+            body.angularVelocity = 0.0f;
+            body.pseudoLinearVelocity = Vec2{0.0f, 0.0f};
+            body.pseudoAngularVelocity = 0.0f;
+            body.sleepTime = 0.0f;
+        }
+    }
 }
 
 void World::Validate() const {
