@@ -43,19 +43,19 @@
 | R3 | AABB 同步 | `World::Synchronize()` 已实现（W2：由形状算 `Body::aabb`）；fat AABB margin 未做 | W6 | 加 margin 外推（`AABB::Extend`）；平面形状由宽相特判 | fat margin 可在 ImGui 调；高速物体不漏检 |
 | R4 | 形状系统 | **W2/W4 已实现**：`Core/Shape.h` + `Collision/{ShapeTypes,CircleShape,PlaneShape,PolygonShape}.h`、World 形状池、`CreateCircleShape`/`CreatePlaneShape`/`CreatePolygonShape`/`CreateBoxShape`/`AttachShape` | — | 无（多边形已接入质量/AABB/窄相） | P04 全部单测；既有圆/平面测试不回归 |
 | R5 | 窄相数据 | **W2/W4 已实现**：圆族解析 + `CollideCircleAndPolygon`/`CollidePolygonAndCircle`/`CollidePolygonAndPlane`/`CollidePlaneAndPolygon` + `SAT`/`Clipping`/`CollidePolygons`/`FindMaxSeparation`/`ClipSegmentToLine`/`SATCache` | — | 无（SAT 路线完成；以后只有 DynamicAABBTree / 关节等扩展） | 9 种位姿、面-面 2 点/顶点-面 1 点、交换 A/B 法线反向 + Key 集合同、旋转 100 帧 Key 稳定 |
-| R6 | Contact 持久化 | **W2 已实现**：`World::UpdateContacts` 按 body 对 + `ContactID::Key()` 继承每点累计冲量（`m_previousContacts`），`isPersistent` 就位；文件已移到 `Collision/Contact.h` | W5 | warm start 正式使用继承的冲量；`MatchAndInheritImpulses` 抽成独立可测函数 | 缓慢旋转 100 帧同一接触 Key 不变（W4 D5） |
+| R6 | Contact 持久化 | **W2 已实现 + W5 接入求解器**：`World::UpdateContacts` 按 body 对 + `ContactID::Key()` 继承每点累计冲量（`m_previousContacts`），`isPersistent` 就位；W5 的 `Prepare` 用它播种 warm start（`isPersistent=false` 的点从精确 0 开始） | — | 无。匹配-继承逻辑保持 World 内部私有函数（`MatchAndInheritImpulses`），契约通过 `GetContacts()` 公开视图测试；不新增公共 API | 缓慢旋转 100 帧同一接触 Key 不变（W4 D5）；`isPersistent` 语义 = 全部新点都匹配到前帧点 |
 | R7 | 窄相阶段 | **W2 已实现**：`World::UpdateContacts()` = O(N²) 对枚举 + AABB 过滤 + 按形状类型分派 | W6 | 把对枚举换成 `IBroadPhase::QueryPairs`；窄相函数表（3×3 分派）随 Polygon 一起抽 | 与宽相配对数量一致；无 NaN；切宽相行为不变（回归 hash） |
-| R8 | 求解器阶段 | **W3 已实现**：`Solver/ContactSolver.h/.cpp`（Prepare/WarmStart(no-op)/SolveVelocity，法向 K_n、累计钳制、迭代、restitution bias）；`World::PrepareConstraints/SolveVelocityConstraints` 已接线；Week 2 的临时速度投影已删除 | W5 | 追加切向摩擦锥、warm start（`WarmStart` 实装）、split impulse 位置层；`SolverSettings` 的 warmFactor/β/slop 生效 | 10 方块堆叠稳定、动量/能量守恒、`accN>=0` 恒成立、e=0.8 反弹≈3.2m |
+| R8 | 求解器阶段 | **W3 法向 + W5 完整**：`Solver/ContactSolver.{h,cpp}`（Prepare/WarmStart/SolveVelocity）+ `ContactSolverPosition.cpp`（split impulse 位置层）；摩擦锥累计钳制、warm starting（完整继承，factor 只作实验旋钮）、restitution bias、Baumgarte 对比基线；`World::PrepareConstraints(dt)`/`WarmStart`/`SolvePositionConstraints(dt)` 已接线 | — | 无（无关节/无 block solver；W6 只动宽相，不碰求解器） | 10 方块堆叠 10 s 稳定（穿透 4.22 mm）、摩擦角 20 格扫描、`accN>=0` 1000 帧、1000 帧摩擦锥 0 violation、split impulse 真实速度逐位不变 |
 | R9 | 岛屿/休眠 | `World::BuildIslands()`、`UpdateSleep()` 为空；`Body::islandId`、`sleepTime`、`allowSleep`、`World::GetIslandCount()`、`GetAwakeBodyCount()` 已留 | W7 | `Solver/Island.{h,cpp}`、`Sleep`；整岛原子睡眠/唤醒 | 3 岛/合并岛测试；sleep 后状态逐位不变；多米诺连锁唤醒 |
 | R10 | 接触/岛统计 | `World::GetContactCount()` **W2 已接真实计数**；`GetShapeCount()` 已加；`GetIslandCount()` 仍返回 0（W7） | W7 | 岛屿统计接真实值；回归输出 awake 曲线 | ImGui 面板数字与实际一致 |
 | R11 | 性能剖析 | `Core/Profiler.h` 宏已定义（默认空）；CMake 选项 `PHYSICS2D_ENABLE_TRACY`/`PHYSICS2D_TRACY_ROOT` 已留 | W6/W8 | 打开 Tracy、在 8 个 Step 阶段与 SAP 排序/扫描埋点；`Plot` awake/contact 数 | Tracy 时间线与 README 数字对应 |
 | R12 | headless 回归 | `tests/regression/` 目录 + README 约定；`tests/CMakeLists.txt` 预留注释块；`MathUtils` FNV-1a/量化 hash 已实现 | W6-W7 | `regression_main.cpp` + `physics2d_regression` target + `golden/*.csv` + `scripts/compare_hash.py` | CI headless job 跑 10000 步 hash 对比；退出码 0/1/2/3/4 语义 |
 | R13 | 基准工具 | `bench/bench_broadphase.cpp` 占位 + `physics2d_bench` target 已存在（只依赖 core） | W6 | 参数化场景，输出 markdown/JSON 表格 | N=50/200/500/2000 实测数字进 README |
 | R14 | Demo 扩展 | `testbed/Demo.h` 基类 + demo 注册表；`testbed/demos/` 已接入 CMake glob | W4-W7 | 按 P15 加 BoxStack/Pyramid200/FrictionRamp/Dominoes/IslandSleep500/StressBenchmark 等 | ImGui 下拉可切换；headless 与 testbed 共用场景生成（`testbed/SceneBuilders.h`，W6 再抽） |
-| R15 | 冷热拆分 | `Body` 内已分「冷/热」注释区；`World` 公共 API 只暴露基本类型访问器 | W4 | 拆 `BodySim`/`BodyState` 并行数组（设计文档 3.3 的"重构亮点"） | 全部测试通过、行为 hash 不变 |
+| R15 | 冷热拆分 | `Body` 内已分「冷/热」注释区；W5 只**追加**了伪速度字段（split impulse 需要），未拆并行数组 | **W6**（W4→W5→W6 二次顺延，见第 5 节偏差登记） | 拆 `BodySim`/`BodyState` 并行数组（设计文档 3.3 的"重构亮点"）；行为 hash 不变 | 全部测试通过、行为 hash 不变 |
 | R16 | ContactID 对称性 | **W4 已实现**：`Key()` 不再包含 `flip` 位（flip 是朝向元数据），同一物理接触 A/B 交换后 Key 不变；SAT 的 reference/incident 归属与 flip 位按此约定填写；World 的持久化匹配按 Key 工作 | — | 无 | 交换 A/B 单测 Key 集合相同；旋转 100 帧 Key 只在特征切换帧变化 |
 | R17 | 时间步/插值 | `StepAccumulator` 已实现 + `GetAlpha()` | W7 | 渲染插值（可选） | 视觉顺滑，不影响物理确定性 |
-| R18 | 求解器参数暴露 | `SolverSettings` 全部字段 + `World::SetSolverSettings` 已实现 | W5 | DebugUI 滑条实时生效（迭代数、warmFactor、μ/e 组合、slop、β） | 拖滑条不崩、不需重启 |
+| R18 | 求解器参数暴露 | `SolverSettings` 全部字段 + `World::SetSolverSettings` 已实现；**W5 完成 DebugUI 实时面板**（迭代数/warmFactor/useWarmStarting/useSplitImpulse/β/slop/gravity/linearSlop/maxLinearCorrection/useSatCache）+ Contacts 调试面板 + 状态面板（Step 耗时） | — | 无 | 拖滑条不崩、无需重启；10 盒掉到 3 迭代会明显塌、8 迭代稳定（肉眼可见） |
 
 ---
 
@@ -82,14 +82,14 @@
 | W2 | P05(完整)、P06 | ✅ **已完成**：`Core/Shape.h`、`Collision/{ShapeTypes,CircleShape,PlaneShape,Analytic,Contact}.{h,cpp}`、`World` 形状池/接触列表/临时响应、Testbed 地面演示 | `World::UpdateContacts`（O(N²)）、`Synchronize`、`SolvePositionConstraints`（临时） |
 | W3 | P08 | ✅ **已完成**：`Solver/ContactSolver.{h,cpp}`（法向 SI + restitution bias）、World 的 `PrepareConstraints`/`SolveVelocityConstraints` 接线、删除 W2 临时速度投影；Testbed SphereStack demo | `World::SolveVelocityConstraints`（法向部分） |
 | W4 | P04、P07 | ✅ **已完成**：`Collision/{PolygonShape,SAT,Clipping}.{h,cpp}`、`SATCache`、`CollideCircleAndPolygon`/`CollidePolygonAndPlane`（P06 剩余）、`ContactID` flip 不计入 Key、World 多边形 API/分派/cache 持久化、BoxStack demo | `World::UpdateContacts` 走 SAT；冷热拆分移到 W5（见偏差） |
-| W5 | P09、P10、P14 | `Solver/ContactSolver` 扩展：摩擦锥、warm start、split impulse；W5 末做 `Body`→`BodySim`/`BodyState` 冷热拆分（W4 评估后移）；DebugUI 参数面板 | `World::WarmStart`、`World::SolvePositionConstraints` |
+| W5 | P09、P10、P14 | ✅ **已完成**：`Solver/ContactSolver.cpp` 扩展（摩擦锥、warm start、Baumgarte 对比基线）、新增 `Solver/ContactSolverPosition.cpp`（split impulse 伪速度位置层）、`Body` 追加伪速度字段、`World` 接线与 `TEMPORARY` 位置推出删除、DebugUI Solver/Contacts/状态面板、FrictionRamp demo、W4 崩塌基线测试改稳定期望；`Body`→`BodySim`/`BodyState` 冷热拆分二次顺延到 W6（见偏差） | `World::WarmStart`、`World::SolvePositionConstraints(dt)`、`World::PrepareConstraints(dt)` |
 | W6 | P11、P12、D04 | `Collision/{BroadPhaseBruteForce,BroadPhaseSAP}`、`bench/bench_broadphase` 实现、`testbed/SceneBuilders.h` | `World::UpdateBroadPhase`、`World::Synchronize`；`m_broadPhase` 接线 |
 | W7 | P13、P15、P16 | `Solver/{Island,Sleep}`、8 个 demo、`tests/regression/regression_main.cpp` | `World::BuildIslands`、`World::UpdateSleep`；回归 target 加进 `tests/CMakeLists.txt` |
 | W8 | W01-W04、D03 | `docs/{architecture,math,profiling}.md` 升级、README 数字表、GIF | 无（文档与验收周） |
 
 ---
 
-## 5. 与设计文档的偏差登记（Week 1-2 实际选择）
+## 5. 与设计文档的偏差登记（Week 1-5 实际选择）
 
 | 设计文档 | 实际做法 | 理由 |
 | --- | --- | --- |
@@ -110,9 +110,19 @@
 | 圆形的 `localCenter ≠ 0` | `ComputeCircleMass` 返回绕质心的惯性矩；`World::AttachShape` 用平行轴折算到 body 原点，但 body 原点即旋转中心 | W2 没有角动量响应（临时响应不处理 r×J），W3 求解器落地时再决定是否引入质心偏移的完整处理；现有 API 已预留 center 字段 |
 | P04 "内部合并距离 < kLinearSlop 的相邻顶点" | **拒绝**而不是静默合并（`SetPolygon` 返回 false） | 设计文档 3.4 明确要求"绝不静默修正用户输入"；DoD 测试也要求"重复顶点被拒绝"。调用方拿到确定性的 false 自行修正数据 |
 | `ContactID::Key()` 在 W1 设计里含 flip 位 | Week 4 改为 `referenceEdge | incidentVertex<<4 | type<<8`，**不含 flip**；`operator==` 仍比较全部字段（含 flip） | P07 D3/D5 要求交换 A/B 后"Key 集合相同"，而 A/B 交换必然翻转 flip 位；身份必须与朝向无关。W5 warm starting 的跨帧匹配也因此更稳 |
-| W4 计划里的 `Body`→`BodySim`/`BodyState` 冷热拆分 | 移到 **W5 末**执行（W4 只做 SAT/裁剪/多边形，避免同周跨模块重构导致回归难定位） | 设计文档 3.3 原计划"进入求解器时拆分"，但求解器 W3 已落地而 W4 是碰撞最重的一周；W5 与 warm start/split impulse 一起做，测试基线（当前 210+ 用例）更成熟 |
+| W4 计划里的 `Body`→`BodySim`/`BodyState` 冷热拆分 | W4 → **W5 末** → **W6**（二次顺延）。W5 只做了拆分的前置：`Body` 追加 `pseudoLinearVelocity/pseudoAngularVelocity`（split impulse 热数据） | 设计文档 3.3 原计划"进入求解器时拆分"，但求解器 W3 已落地、W4 是碰撞最重的一周、W5 是本项目最难的求解器周（摩擦+warm start+split impulse+里程碑）。同周再做跨模块热冷重构会让里程碑回归无法定位；W6 宽相周正好只需要 AABB/宽相热数据，拆分收益在那周验证 |
 | Collision 依赖 Core（分层方向） | `PlaneShape.cpp` 为 `kPlaneAabbExtent` include 了 `Core/Settings.h`（纯常量头，只依赖 Math，无循环） | 设计文档要求魔法数字集中在 Settings.h；Settings 是叶子头文件，实际耦合为零。W6 拆宽相模块时若需要再引入 Collision 私有常量头 |
 | death tests 在 Release 下 | `TestSupport.h::DeathTestFixture` 在 `NDEBUG` 或沙箱禁止写临时文件时 `GTEST_SKIP()`（带原因） | assert 在 Release 被编译掉，"非法输入必须崩"不成立；CI 的 Debug job 真正执行这些断言测试 |
+| **W5**：`kSplitImpulseSlop` 计划值 0.01 m | 默认值改为 `kLinearSlop`（0.005 m） | W1 的 0.01 是占位符，恰好等于里程碑验收上限（"最大穿透 <0.01 m"）——位置层的死区等于验收线时永远达不到验收。0.01 保留为**验收阈值**而不是求解器目标；稳态穿透实测 4.22 mm（10 盒） |
+| **W5**：`kWarmStartFactor` 计划值 0.85（注释称"1.0 会过冲振荡"） | 默认值改为 **1.0**（完整继承）；0/0.5/0.85/1.0 仍是实验旋钮 | 该注释是 W1 未跑堆叠时的假设。实测 10 盒 600 步、默认 8 迭代、摩擦 0.3、split impulse 开：factor 0 → step 258 塌、0.5 → 314、0.85 → 259、0.90 → 283、0.95 → 332，**1.0 → 不塌**（max pen 5.22 mm、top y 9.478、末秒抖动 0.0248 m/s）。即**所有 <1.0 的 factor 在 10 s 内都失去塔**（具体倒塌步数依赖瞬态，不作契约）。机制：factor<1 每帧丢掉 (1-f) 的已收敛冲量，PGS 必须每帧重解，把约束顺序偏差重新注入——warm start 本意正是压制它。Box2D 2.4 也是完整继承 |
+| **W5**：`useSplitImpulse=false` 时"退化为 Baumgarte" | 实装为 `Prepare` 的 Baumgarte bias（`-(β/dt)·max(0, pen-linearSlop)`），**不是**回退到 W2 位置推出 | W2 位置推出已随本次改动整体删除：它不守恒且无角响应，作为对照实验不具可比性。Baumgarte 是设计文档 P10 指定的对照基线（速度层注入能量），实测静置 2 cm 重叠箱：split impulse 真实速度 3e-5 m/s vs Baumgarte 0.18 m/s（=bias 目标） |
+| **W5**：`ContactSolver::ContactConstraintPoint` 预留的 `pseudoNormalMass` 字段 | 未添加；位置层直接复用 `normalMass`（K_n） | 伪速度迭代期间位置冻结（伪速度只在迭代结束后积分一次），杠杆臂与 K_n 与速度层同形，冗余缓存只会带来不一致风险 |
+| **W5**：`ContactSolver::Prepare` 签名 | 追加 `float dt = kFixedTimeStep`（默认参数，旧 3 参调用仍有效） | Baumgarte bias 是速度目标 `(β/dt)·pen`，需要步长；把 dt 放到 SolverSettings 或成员状态会让"步长唯一来源"变味。World 显式传本步 dt。`Prepare` 不在冻结公共 API 清单内（World/Body/Math/形状/Contact 才是） |
+| **W5**：`World::SetUseSplitImpulse(bool)`（P10 要求） | 未新增该方法；用已有的 `World::SetSolverSettings` + `SolverSettings::useSplitImpulse` | 冻结 API 优先：World 已有通用求解器设置入口（R18），再加一个单项 setter 会让配置入口分叉。testbed 面板与测试都走 `SetSolverSettings` |
+| **W5**：P09 要求 `MatchAndInheritImpulses` 抽成独立可测函数 | 保持 `World.cpp` 内部私有函数，不新增公共 API；继承契约通过 `World::GetContacts()` 公开视图做端到端测试 | 该函数是 World 持久化策略的实现细节，公开它会冻结一个本可随 W6 宽相等调整的内部接口。测试覆盖等价（`isPersistent`、跨帧继承、Key 匹配、部分匹配） |
+| **W5**：P10 的"30 层堆叠 10 s 穿透 < slop" | 位置层压力测试用 **32 速度迭代**（站立窗口 5 s、最大穿透 4.12 mm < slop），并在测试注释/printf 中记录 8 迭代实测塌陷数据（maxPen 0.146 m、max|angle|=π） | 30:1 单列每帧要传递 30 层支撑，8 次 PGS 迭代的传播预算不足（W4 已验证 10 盒 8 迭代都站不住）。这是**速度迭代预算**限制，不是位置层缺陷：位置层验收看站立窗口内穿透 < slop。W5 里程碑明确是 10 盒 @8 迭代 |
+| **W5**：P09 的 `World::SetSolverParameters` | 未新增；`SolverSettings` + `SetSolverSettings` 已覆盖全部参数 | 同 R18：避免分叉配置入口 |
+| **W5**：`Body` 的 `pseudoLinearVelocity/pseudoAngularVelocity` | 追加在 `Body` 热数据区，未做热冷拆分 | 见 R15/W6 顺延；伪速度是纯热数据，拆分时随 `BodySim` 一起走 |
 
 ---
 
@@ -127,3 +137,15 @@
 - **句柄而非指针**：公共 API 只交换 `BodyHandle`/`ShapeHandle`；stale 句柄必须安全失效。
 - **确定性**：迭代顺序由 vector 下标决定；禁止 unordered_map 遍历顺序影响物理；场景随机数只用于建场景。
 - **魔法数字**：所有容差/系数进 `Settings.h`。
+
+### W5 起生效的求解器不变量（改求解器前先核对）
+
+- **warm start 只施加一次**：`Prepare` 把继承冲量 × `warmStartFactor` 播种进 `ContactConstraintPoint`，
+  `WarmStart` 施加 cache 原值；禁止在 `WarmStart` 里二次缩放，也禁止在 `Prepare` 之后重算 restitution bias。
+- **钳制累计值，不钳增量**：法向 `accN = max(accN+λ, 0)`、切向 `accT = Clamp(accT+λt, −μ·accN_new, +μ·accN_new)`；
+  法向先解、切向后解（摩擦锥半径用更新后的 accN）；`μ` 直接用 `contact.friction`（World 已算 `sqrt(μA·μB)`）。
+- **伪速度层只碰伪速度**：`SolvePosition` 不得读写 `linearVelocity/angularVelocity`；每步结束必须清零伪速度；
+  穿透修正只能推不能拉（累计伪冲量 ≥ 0）。
+- **restitution 阈值**：仅当初始接近速度 `−vn0 > restitutionThreshold` 时 `bias = e·vn0`，否则 0
+  （静止堆叠不能被微小接近速度反复补弹）。
+- **`isPersistent=false` 的接触点从精确 0 开始**（warm start 只能继承同一物理特征上一帧的解）。

@@ -277,3 +277,119 @@
 3. 位置推出仍是 `TEMPORARY`（W5 split impulse 替换）；grep TEMPORARY 只剩它。
 4. 多边形形状代码路径对顶点顺序/法线方向极度敏感：改 PolygonShape 后必须跑
    `test_polygon_shape` + `test_sat` 的 9 位姿与旋转稳定性测试。
+
+---
+
+## Week 5 · 稳定堆叠：摩擦锥 + warm starting + split impulse
+
+**完成**
+- **摩擦（P09 D1-D2）**：`t = Skew(n)`、`K_t`、`λt`；**钳制累计**切向冲量
+  `accT ∈ [−μ·accN_new, +μ·accN_new]`（不是增量）；同一迭代内法向先解、切向后解（锥半径用更新后的
+  accN，否则锥可能在施加切向冲量后收缩）；`μ` 直接取 World 预组合的 `sqrt(μA·μB)`。
+- **Warm starting（P09 D3-D4）**：`ContactPoint::normalImpulse/tangentImpulse` 跨帧继承
+  （W2/W4 已铺好 `ContactID::Key()` 匹配），`Prepare` 播种 `inherited × warmStartFactor`、
+  `WarmStart` 施加一次、`SolveVelocity` 写回；`isPersistent=false` 的点从精确 0 开始。
+  **默认 factor 从 W1 计划的 0.85 改为 1.0**（实测见下，偏差已登记）。
+- **Split impulse（P10）**：新增 `Solver/ContactSolverPosition.cpp` 伪速度位置层，替换 W2 的
+  `TEMPORARY` 位置推出；按**位置积分后**的 transform 重算杠杆臂与 K_n，穿透修正目标
+  `(β/dt)·max(0, pen−slop)`、累计钳制 ≥0，迭代后一次积分进 transform（位移/转角按
+  `maxLinearCorrection`/`kMaxAngularCorrection` 钳制）并清零；**真实速度全程不读不写**。
+  `useSplitImpulse=false` 走 Baumgarte 对比基线（`Prepare` 加 `(β/dt)` 速度目标）。
+- **World 接线**：`PrepareConstraints(dt)` / `WarmStart` / `SolveVelocityConstraints` /
+  `SolvePositionConstraints(dt)`；删除 `TEMPORARY` 位置推出与 `kPositionCorrectionFactor`；
+  `CheckSane` 覆盖伪速度状态；`Step` 的 `positionIterations` 真正生效。
+- **testbed（P14）**：DebugUI 重写为 4 面板（Testbed Controls / Solver Settings / Contacts / Status），
+  求解器参数实时写回 `World::SetSolverSettings`（不重建场景）；Contacts 面板显示每点法线/穿透/
+  法向与切向累计冲量并可点击高亮；Status 面板加 Step 耗时平滑值；新增 **FrictionRamp** demo
+  （可调 θ/μ，实时显示 μ vs tanθ 与静止/下滑判定）；BoxStack 换成 W5 稳定说明 + verdict；
+  smoke 汇总扩展出 contact_points / max_penetration_mm / solver 配置行 / 每接触冲量。
+- **测试**：301 用例（debug/sanitize；release 302）全绿；新增 17 个 solver 测试
+  （摩擦 6 / warm start 4 / split impulse 7）+ 6 个 World 级稳定性测试；
+  W4 的「10 盒必塌」基线测试改成稳定期望并保留 W4 历史数据。
+
+**卡住的地方（现象 → 排查 → 根因 → 修复）**
+1. **10 盒塔在默认 8 迭代下仍会塌——三级机制归因**
+   - 现象：W5 第一版（摩擦+warm start 0.85+split impulse）跑 600 步仍在 step 259 倒。
+   - 排查：控制变量实测（600 步）：μ=0（关摩擦）→ step 135 塌 ≈ W4 基线 138；摩擦开、只关
+     warm start → 258 塌；三者全开 → 不塌。**根因不是单一 bug，而是三个机制各自补齐**：
+     摩擦提供横向阻力、warm start 保留平衡解、split impulse 无能量地清理穿透。
+   - 修复：机制实现正确后，把默认 warmFactor 改成 1.0（下一条），不调迭代数/不降摩擦/不加阻尼。
+2. **warmStartFactor 默认 0.85 反而让塔在 step 259 倒**
+   - 数据（10 盒 600 步，塌=倒塌步数）：0.00→258、0.50→314、0.85→259、0.90→283、0.95→332、
+     **1.00→不塌**（max pen 5.223 mm）。
+   - 根因：factor<1 每帧把已收敛冲量打 `(1−f)` 折，PGS 必须每帧重新解这部分，而约束**顺序偏差**
+     正好随被重解的量重新注入——warm start 的本意就是压制这个偏差。倒塌步数对瞬态敏感
+     （所以不作契约），但「<1.0 在 10 s 内全保不住」是稳定现象。Box2D 2.4 也是完整继承。
+   - 修复：默认改 1.0，factor 保留为对比实验旋钮；在 `Settings.h` 与 dev-interfaces 偏差表登记
+     「W1 的 0.85 是未跑堆叠时的假设」。
+3. **30:1 单列在默认 8 迭代下塌**
+   - 现象：30 层位置层验收场景 maxPen 0.146 m、max|angle|=π。排查：同场景 32 次速度迭代 →
+     站立 5 s、穿透 4.12 mm < slop。根因：每帧要沿 30 层传递支撑，8 次 PGS 迭代的传播预算不足
+     （W4 已证 10 盒 @8 迭代都站不住），与位置层无关。
+   - 处理：不伪造稳定。位置层验收改为「32 迭代站立窗口内穿透 < slop」，测试注释与 printf 保留
+     8 迭代塌陷数据；W5 里程碑明确是 **10 盒 @ 默认 8 迭代**。
+4. **split impulse vs Baumgarte 在 10 盒塔上看不出穿透差异**（5.223 vs 5.273 mm）
+   - 根因：full warm start 下速度残差本来就小，β=0.2 的 Baumgarte 也足以把穿透压在 slop 带内；
+     位置层的价值不是"更小的穿透"，而是「不注入能量」。
+   - 处理：改用确定性深穿透场景（静置箱 2 cm 初始重叠）量化：split on **max upward velocity
+     0.000000 m/s** vs Baumgarte **1.139999 m/s**（= 手算 `(0.2/dt)·(0.1−0.005)`）。这个数字比
+     塔级穿透更能说明机制。
+5. **并行开发共享工作区的 stale object**：多个 agent 同时改共享头时，别人的 build dir 会链接旧
+   obj（一度出现"BoxStack 还塌"的假象）。最终结论一律以 canonical clean build 为准（本次三 preset
+   从零重编）。
+6. **release-only `C4189`**：`const float friction` 只被 debug assert 使用，`NDEBUG` 下未引用
+   → 加 `static_cast<void>(friction)`（与 W2 的 `ComputePlaneMass` 同款坑）。
+
+**数据（测量条件：Windows 11 22631 / i7-12650H / 16 GB / MSVC 19.44 / CMake 3.31.12 / Ninja 1.12.1）**
+- **里程碑**（10×1 m 方块塔，默认 8/3 迭代，warmFactor=1.0，600 步 = 10 s）：最大穿透
+  **5.223 mm**（< 10 mm）、顶层 y **9.47813 m**（起始 9.5；2.2 cm = 10 个接触的 slop 累积）、
+  最大倾斜 **0.004596 rad ≈ 0.26°**、|x| 峰值 **0.03063 m**、末帧最大速度 **0.007216 m/s**、
+  末秒抖动 **0.024816 m/s**、contacts 10 / points 20、无 NaN。testbed smoke 600 步：
+  max_penetration **3.893 mm**、|tilt| ≤ 0.21°、avg_frame_ms 1.215。
+- **warm starting 因子对比**（10 盒 600 步，塌=倒塌步数 / max pen m）：0.00 = 258 / 0.2049、
+  0.50 = 314 / 0.1572、0.85 = 259 / 0.1395、0.90 = 283 / 0.1974、0.95 = 332 / 0.1988、
+  **1.00 = 不塌 / 0.005223**。
+- **split impulse 对比**：10 盒塔 on/off 都站住（max pen 5.223 / 5.273 mm、末秒抖动
+  0.0248 / 0.0282 m/s）；能量注入（静置箱 2 cm 重叠，确定性）：on **0.000000 m/s** vs
+  Baumgarte off **1.139999 m/s**。
+- **摩擦**：20 格斜面扫描（μ∈{0.1,0.3,0.5,0.8,1.2} × θ∈{5,15,30,45}°）：μ>tanθ 的 12 格
+  5 s 位移 ≤ **1.5 mm**；μ<tanθ 的 8 格明显下滑（μ/tan=0.8 → +17.74 m；μ=0.1/45° → +79.8 m）。
+  1000 帧斜堆叠：max|accT|/accN = **0.5000**、锥外 violations **0**；μ=0 时 tangentImpulse 恒 0。
+  单点手算：v=(3,2)、n=(0,1)、μ=0.5 → accN=2、accT=−1（正好在锥边界）。
+- **warm start 残差**（两球叠放单次迭代，手算 `0.5(1−f)g·dt`）：f=0 → 0.08333334、
+  0.5 → 0.04166667、0.85 → 0.0125、**1.0 → 0.00000000**（逐位）；`warmStartFactor=0` 与
+  `useWarmStarting=false` 的求解结果逐位一致（std::bit_cast）。
+- **确定性**：10 盒 600 步两个 World 的 **343** 个状态 float 逐位一致；
+  warm start 关闭等价性 **383** float 逐位一致。
+- **split impulse 位置层手算**：单点 1 次位置迭代位移 = `β(pen−slop)` = **0.009 m**（精确）；
+  杠杆臂场景平移 −0.002 m + 转角 −0.002 rad（各一半）；`positionIterations=0` 位不变。
+- **restitution**：e=0.8 从 5 m 落（接触面 0.5 m）：apex **3.4633 m**、impact 9.5000 m/s、
+  rebound 7.7333 m/s、ratio **0.8140**（解析目标 3.38 m；剩余偏差来自离散
+  `e·(v+g·dt)`，不是位置层注入能量——W2/W3 的位置推出已删除）。
+- **testbed smoke（canonical debug build）**：BoxStack 300 步 `bodies=11 contacts=10 points=20
+  max_pen=3.763mm avg_frame_ms=1.212`；600 步 `3.893mm / 1.215ms`；FallingBall 150 步
+  `5.000mm / 1.009ms`（y=0.495）；SphereStack 300 步 `3.063mm / 1.046ms`；
+  FrictionRamp 300 步 `2.686mm / 1.017ms`（θ=15°、μ=0.30 > tanθ=0.268 → STATIC）。
+- **三 preset（clean build + ctest）**：debug **31.8 s / 301 全绿 / 0 warning**、
+  release **41.0 s / 302 全绿 / 0 warning**、sanitize **42.9 s / 301 全绿 / 0 warning**；
+  测试 exe 复制到工作区外运行 → **301/301 全过**（15 个 death test 真正执行）。
+
+**下周（W6）**
+1. `IBroadPhase` 接口 + `BroadPhaseBruteForce` 基线 + `BroadPhaseSAP`（端点数组+插入排序），
+   要求两实现配对集合与暴力参考完全一致；
+2. `World::UpdateBroadPhase` 接线 + fat AABB margin（`AABB::Extend`）+ 平面特判；
+   切宽相物理结果 hash 不变；
+3. `bench_broadphase` + Tracy 埋点，拿到 N∈{50,200,500,2000} 的真实耗时表；
+4. `Pyramid200`/`StressBenchmark` demo + `tests/regression` headless 回归（golden hash + CI job）；
+5. **补做冷热拆分 `BodySim`/`BodyState`**（W4→W5→W6 二次顺延，见 dev-interfaces 偏差登记）；
+6. tag `v0.6-sap`。
+
+**给未来的自己的提醒**
+1. **warm start factor 不是"调小更安全"**：factor<1 每帧丢掉已收敛解、重新注入 PGS 顺序偏差；
+   10 盒塔实测所有 <1.0 的 factor 都在 10 s 内倒。默认 1.0（Box2D 同款）。
+2. **split impulse 的正确性看两件事**：真实速度逐位不变 + 伪速度每步清零。穿透变小只是副产品。
+3. **位置层必须在位置积分之后用当前 transform 重算杠杆臂**；速度层的 cache 已经过期一步。
+4. **30 层单列能不能站是速度迭代预算问题**，别用位置层硬顶；验收场景必须写清迭代数。
+5. 共享工作区并行开发时 build dir 可能链接到旧 obj（stale object）；最终结论一律以
+   canonical clean build 为准。
+

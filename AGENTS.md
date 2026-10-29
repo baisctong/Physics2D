@@ -14,9 +14,10 @@
 评价标准是「**链路完整 + 原理正确 + 有量化数据 + 代码可读可讲**」，不是功能多。
 设计文档原文在仓库外：`../2D物理引擎项目完整工作流与DeepSeek提示词库.md`（第 5 章按周执行，第 12 章提示词库）。
 
-**当前状态：Week 1-4 已完成**（数学库、Body/World 积分骨架、形状系统 + 圆族解析碰撞、
-**凸多边形 + SAT + 裁剪式 Manifold + SATCache**、法向 Sequential Impulse 求解器、
-Testbed FallingBall/SphereStack/BoxStack 三个 demo、测试/CI/构建体系；Week 5-8 的接口已预留）。
+**当前状态：Week 1-5 已完成**（数学库、Body/World 积分骨架、形状系统 + 圆族解析碰撞、
+**凸多边形 + SAT + 裁剪式 Manifold + SATCache**、**摩擦锥 + warm starting + split impulse 求解器**、
+**10 方块堆叠 10 秒稳定里程碑**、Testbed 四个 demo 与 Solver/Contact/Status 参数面板、
+测试/CI/构建体系；Week 6-8 的接口已预留）。
 详见 `docs/ROADMAP.md` 与 `docs/devlog.md`。
 
 ---
@@ -131,15 +132,14 @@ ctest --preset vs2022-debug
 
 **当前技术债（明确标记，按周清理）**：
 
-- `World::SolvePositionConstraints` 里的 **`TEMPORARY (Week 2)` 位置推出**（slop + 单步钳制的
-  mass 加权分离）：W5 用 split impulse 替换。它会向低速接触注入少量势能，长跑"完全静止"断言
-  要写成契约（阈值内不弹/位移有界）。grep `TEMPORARY`。
-- 求解器只有法向：**无摩擦锥、无 warm start（`WarmStart` 仍 no-op、`Prepare` 每帧从 0 开始）、
-  无 split impulse**（全部 W5）；冲量累计已写回 `ContactPoint::normalImpulse`，W5 直接接。
-- 无摩擦 + 无 warm start 导致**多层堆叠在物理上不稳定**（10 盒默认 8 迭代 ~138 步崩塌，
-  如实记录为 W4 基线）；不要用调迭代数去"修"它，W5 摩擦+warm start 才是解法。
+- ~~`TEMPORARY (Week 2)` 位置推出~~ → **W5 已删除**，由 `Solver/ContactSolverPosition.cpp` 的
+  split impulse 伪速度层取代；`grep TEMPORARY` 现在只应命中文档/历史注释。
+- ~~无摩擦 / 无 warm start / 无 split impulse~~ → **W5 已完成**：摩擦锥（钳累计值）、warm starting
+  （默认 factor 1.0，完整继承）、split impulse 位置层、Baumgarte 对比基线。
+- **30:1 单列高塔在默认 8 速度迭代下会塌**（迭代预算限制，10 盒才是 8 迭代验收场景）；
+  位置层验收场景必须写清迭代数，不要用位置层去硬顶速度迭代不足。
 - 宽相仍是 `UpdateContacts` 里的 O(N²) 枚举（W6 换 `IBroadPhase`）。
-- `BodySim`/`BodyState` 冷热拆分从 W4 移到 **W5 末**（见 dev-interfaces 偏差）；岛屿休眠（W7）、
+- `BodySim`/`BodyState` 冷热拆分从 W4→W5→**W6** 二次顺延（见 dev-interfaces 偏差）；岛屿休眠（W7）、
   Tracy 与 headless 回归（W6-8）。
 
 ---
@@ -163,26 +163,46 @@ ctest --preset vs2022-debug
 
 ---
 
-## 5. 下一周（Week 5）从哪开始
+## 5. 下一周（Week 6）从哪开始
 
-1. 读 `docs/dev-interfaces.md` 第 2 节 R8/R15/R18 行与第 4 节 W5 行；读设计文档第 5 章 Week 5、
-   第 6.4 节（摩擦/冲量累计/split impulse）、提示词 P09（摩擦+warm start）、P10（restitution+split
-   impulse）、P14（参数面板）。
-2. W5 的产出：
-   - 摩擦：`t = Perp(normal)`、`K_t`、`λt`、**摩擦锥钳制累计值** `accT ∈ [-μ·accN, +μ·accN]`
-     （μ = sqrt(μA·μB)），在 `ContactSolver::SolveVelocity` 的同一迭代里法向→切向；
-   - Warm starting：`Prepare` 从上一帧 `ContactPoint.normalImpulse/tangentImpulse` 继承（按
-     `ContactID::Key()` 匹配已就绪），`WarmStart` 施加 `acc * warmStartFactor`；`useWarmStarting=false`
-     必须退化为当前行为；
-   - Split impulse：独立伪速度层替换 `World::SolvePositionConstraints` 里的 **`TEMPORARY` 位置推出**
-     （`bias = -(β/dt)·max(0, penetration - slop)`，伪速度不写回真实速度）；
-   - ImGui 实时参数面板（迭代数/warmFactor/μ/e/slop/β）与 Contact 调试面板（法线/接触点/累计冲量）；
-   - W5 末做 `Body`→`BodySim`/`BodyState` 冷热拆分（W4 已登记移到 W5）。
-3. 验收：10 方块堆叠 10 s 稳定（最大穿透 <0.01m）、warmFactor 0/0.5/0.85/1.0 对比表、
-   split impulse 开关对比、斜面摩擦角扫描（μ vs tanθ）、`accN>=0` 1000 帧；
-   **不要降低/删除既有 278 个测试**，行为变化要在报告里解释。
-4. 完成后更新 `docs/ROADMAP.md`、`docs/dev-interfaces.md`（R8/R15/R18）、`docs/devlog.md`，
-   跑 sanitize，打 tag `v0.5-stable-stack`。
+1. 读 `docs/dev-interfaces.md` 第 2 节 R1/R2/R3/R13/R15 行与第 4 节 W6 行；读设计文档第 5 章
+   Week 6、第 6.2 节（SAP）、第 8 章（profiling/bench 输出格式）、提示词 P11（IBroadPhase +
+   BruteForce）、P12（SAP + 插入排序）、D04（性能测量纪律）。
+2. W6 的产出（详细验收见 `docs/ROADMAP.md` W6 表）：
+   - `Collision/BroadPhaseBruteForce.{h,cpp}`：`IBroadPhase` 的朴素基线（proxy 空闲列表、
+     `QueryPairs` 严格 A<B 且不重复）；
+   - `Collision/BroadPhaseSAP.{h,cpp}`：端点数组 `{float value; int32_t proxyId : 31; uint32_t isMin : 1}`
+     单一 vector，首帧 `std::sort`、之后 `UpdateAABB` 做冒泡式局部移动（帧间相干性），
+     扫描维护活跃集合 + y 轴二次过滤；
+   - `World::UpdateBroadPhase` 接线（`Synchronize` 已算 AABB，加 fat margin `AABB::Extend`；
+     平面由宽相特判或保留 `kPlaneAabbExtent` 策略）、`SetBroadPhase` 运行时切换；
+     `src/CMakeLists.txt` 登记新 .cpp；
+   - **确定性坑**：换宽相后配对枚举顺序可能改变 → 接触列表顺序改变 → 物理结果抖动。
+     World 必须把宽相回调的 pair 规范化（A<B + 按 index 排序）后再做窄相，才能满足
+     "切宽相物理结果 hash 不变"；
+   - `bench/bench_broadphase.cpp`：N∈{50,200,500,2000} × 1000 帧、两种实现各跑一遍，
+     输出 markdown 表格（真实数字，写清测量条件）；
+   - testbed：`SceneBuilders.h` 抽共享场景构造、`Pyramid200`/`StressBenchmark` demo、
+     宽相下拉框 + ImGui 实时耗时；
+   - `tests/regression/`：`regression_main.cpp` + golden hash + `scripts/compare_hash.py`（可与 W7 合并）；
+   - **补做冷热拆分 `Body`→`BodySim`/`BodyState`**（W4→W5→W6 二次顺延）：拆分后全部测试通过、
+     行为 hash 不变。
+3. 验收：BruteForce 配对集合与直接双重循环参考完全一致；SAP 与 BruteForce 在 10 组随机场景
+   （各 50–500 物体）配对集合完全一致；切宽相物理结果与 W5 一致（回归 hash）；
+   **既有 301 个测试不得弱化/删除**（物理行为除"更快的配对枚举"外不应变化）。
+4. 完成后更新 `docs/ROADMAP.md`、`docs/dev-interfaces.md`（R1/R2/R3/R13/R15）、`docs/devlog.md`、
+   `README.md` 性能表，跑三 preset，打 tag `v0.6-sap`。
+
+### W5 的求解器约定（改求解器前必读）
+
+- **摩擦锥钳制累计值**：`accT = Clamp(accT + λt, −μ·accN_new, +μ·accN_new)`；法向先解、切向后解；
+  `μ` 用 `contact.friction`（World 已做 `sqrt(μA·μB)`），不要二次组合。
+- **warm start 只施加一次**：`Prepare` 播种 `inherited × warmStartFactor`，`WarmStart` 施加 cache
+  原值；默认 `warmStartFactor = 1.0`（小于 1 会每帧丢已收敛解、重新注入 PGS 顺序偏差，实测 10 盒塔
+  所有 <1.0 的 factor 都倒）。
+- **split impulse 只碰伪速度**：位置层不得读写真实速度；每步结束清零伪速度；位置层要用
+  **位置积分后**的 transform 重算杠杆臂（速度层 cache 已过期一步）。
+- 不变量清单见 `docs/dev-interfaces.md` 第 6 节「W5 起生效的求解器不变量」。
 
 ---
 

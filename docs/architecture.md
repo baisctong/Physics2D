@@ -1,4 +1,4 @@
-# 架构说明（Week 1-4）
+# 架构说明（Week 1-5）
 
 > 本文描述**当前已实现**的架构，以及为 Week 2-8 预留的挂载点。
 > 公式推导见设计文档第 6 章与未来 `docs/math.md`；接口预留清单见 `docs/dev-interfaces.md`。
@@ -56,19 +56,21 @@ CI 的 `layering` job 用 grep 强制这条规则，headless job 则证明核心
 
 ## 3. 关键数据布局
 
-### 3.1 Body：冷热分离（Week 1 单结构，Week 4 拆分）
+### 3.1 Body：冷热分离（Week 1 单结构，拆分顺延到 Week 6）
 
 `include/physics2d/Core/Body.h` 按设计文档 3.3 节把字段分成两组，并在注释里标出：
 
 - **冷数据**（组织性，用户/UI 访问）：`handle`、`type`、`shape`、材质参数、`allowSleep`、
   `isAwake`、`userData`、`debugName`。
 - **热数据**（积分器/求解器每帧读写）：`xf`、`linearVelocity`、`angularVelocity`、
+  `pseudoLinearVelocity`/`pseudoAngularVelocity`（Week 5 追加，split impulse 专用）、
   `force`/`torque`、质量与逆质量、`sleepTime`、`islandId`、`aabb`。
 
-Week 1-3 用单一 `Body` 结构跑通；**Week 4 的计划重构**把它拆成 `Body`（冷）+ `BodySim` + `BodyState`
-三个并行数组。为了让这次拆分不动外部代码，`World` 的公共 API 只暴露**基本类型访问器**
-（`GetPosition` / `GetLinearVelocity` / `GetMass` …），`GetBody()` / `GetBodies()` 明确标注为
-debug/testbed 用途。详见 `docs/dev-interfaces.md`。
+Week 1-5 用单一 `Body` 结构跑通；原计划 Week 4 的**冷热拆分**（`Body` 冷 + `BodySim`/`BodyState`
+并行数组）W4 顺延到 W5、W5 再顺延到 **W6**（理由见 `docs/dev-interfaces.md` 第 5 节：求解器周不做
+跨模块重构，避免里程碑回归无法定位）。为了让这次拆分不动外部代码，`World` 的公共 API 只暴露
+**基本类型访问器**（`GetPosition` / `GetLinearVelocity` / `GetMass` …），`GetBody()` / `GetBodies()`
+明确标注为 debug/testbed 用途。
 
 ### 3.2 Handle 与 IDPool
 
@@ -114,7 +116,8 @@ flowchart LR
 - 质量推导：`mass = density * shape.area`；圆形 `I = 0.5*m*r²`，`localCenter ≠ 0` 时按平行轴定理
   折算到 body 原点（Week 2 的简化：body 原点即旋转中心）。
 - `Contact` 由 World 拥有并按帧重建；`m_previousContacts` 保留上一帧，用于按 `ContactID::Key()`
-  继承接触点的累计冲量（Week 5 warm starting 的直接前置）。设计文档把 `Contact` 放在 Solver，
+  继承接触点的累计冲量。Week 5 起这条继承链路是热路径：`ContactPoint::normalImpulse/tangentImpulse`
+  → `Prepare` 播种 → `WarmStart` 施加 → `SolveVelocity` 写回。设计文档把 `Contact` 放在 Solver，
   但它是窄相输出且 World 必须持有列表，所以 Week 2 把文件移到 `Collision/Contact.h`
   （字段语义保持不变，见 `docs/dev-interfaces.md` 偏差登记）。
 - Week 2 的配对枚举仍是 **O(N²) + AABB 过滤**（`Body::aabb` 在 `Synchronize()` 里由形状算出），
@@ -138,53 +141,72 @@ flowchart LR
 - 其余解析路径：圆-多边形（最近边/顶点 Voronoi 区域，P06）、多边形-平面（顶点深度，盒底两顶点
   都贴地时返回 2 点，是 BoxStack 稳定支撑的关键）。
 
-## 4. World::Step 流水线（固定顺序，Week 1-4 已实现 7 个阶段）
+## 4. World::Step 流水线（固定顺序，Week 1-5 已实现 9 个阶段）
 
-| # | 阶段 | Week 1-3 状态 | 预留方法 |
+| # | 阶段 | 当前状态 | 预留方法 |
 | --- | --- | --- | --- |
 | 1 | 积分力 → 速度（semi-implicit） | ✅ 已实现 | `IntegrateForces` |
 | 2 | Broad Phase 更新 / 生成候选对 | ⬜ 预留 W6 | `UpdateBroadPhase` |
-| 3 | Narrow Phase → Contact/Manifold | ✅ W2 圆族 / W4 多边形 SAT+裁剪+解析路径 | `UpdateContacts` |
+| 3 | Narrow Phase → Contact/Manifold | ✅ W2 圆族 / W4 多边形 SAT+裁剪+解析路径（含跨帧冲量继承） | `UpdateContacts` |
 | 4 | 岛屿构建（DFS） | ⬜ 预留 W7 | `BuildIslands` |
-| 4b | 求解器准备（每点 rA/rB、K_n、restitution bias） | ✅ W3 | `PrepareConstraints` |
-| 5 | Warm Start | 🟡 W3 空实现（W5 实装） | `WarmStart` |
-| 6 | 速度迭代（Sequential Impulse，法向） | ✅ W3（W5 加摩擦/warm start/split impulse） | `SolveVelocityConstraints` |
+| 4b | 求解器准备（rA/rB、K_n/K_t、restitution/Baumgarte bias、warm-start 播种） | ✅ W5 | `PrepareConstraints(dt)` |
+| 5 | Warm Start | ✅ W5（施加继承冲量一次） | `WarmStart` |
+| 6 | 速度迭代（Sequential Impulse：法向 + 摩擦锥） | ✅ W5 | `SolveVelocityConstraints` |
 | 7 | 积分速度 → 位置（+ 单步钳制） | ✅ 已实现 | `IntegratePositions` |
-| 8 | 位置迭代（split impulse / Baumgarte） | 🔶 W3：仅位置推出（W5 换 split impulse） | `SolvePositionConstraints` |
+| 8 | 位置迭代（split impulse 伪速度层） | ✅ W5（W2 位置推出已删除） | `SolvePositionConstraints(dt)` |
 | 9 | 同步 transform / AABB | ✅ W2：由形状算 AABB | `Synchronize` |
 | 10 | 休眠判定 | ⬜ 预留 W7 | `UpdateSleep` |
-| 11 | Debug 校验（NaN/Inf 扫描） | ✅ 已实现 | `Validate` |
+| 11 | Debug 校验（NaN/Inf 扫描，含伪速度） | ✅ 已实现 | `Validate` |
 
 顺序不可变（设计文档 4.6 节）。空阶段保留为**具名的私有方法 + 注释**，后续每周只填一个方法
 的函数体，从而保持编译期结构不变、避免"在 Step 中间插一段"引发的顺序回归。
 
-### 4.1 Week 2 的临时响应（已在 Week 3 部分清偿）
+### 4.1 Week 2 的临时响应（Week 5 已全部清偿）
 
 Week 2 为了先跑通"球落在地面停住"实现了一个**故意错误**的临时响应，并在 devlog 里记录它为什么
-不够；Week 3 已经把其中的速度部分换成真正的 Sequential Impulse：
+不够；后续两周把它逐层替换掉，现在仓库里已无 `TEMPORARY` 响应代码：
 
 1. ~~**法向速度投影（restitution 版）**~~ → **Week 3 删除**，由 `Solver/ContactSolver` 取代；
-2. **位置推出**仍保留：`correction = clamp((penetration - kLinearSlop) * kPositionCorrectionFactor,
-   0, kMaxLinearCorrection)`，按逆质量加权沿法线移动两个 body。它只改位置、不守恒，
-   Week 5 用 split impulse 的伪速度层替换（`SolvePositionConstraints` 里仍有 `TEMPORARY` 标记）。
+2. ~~**位置推出**~~（`clamp((penetration - kLinearSlop) * kPositionCorrectionFactor, 0, kMaxLinearCorrection)`
+   的逆质量加权移动）→ **Week 5 删除**，由 split impulse 伪速度层（`ContactSolver::SolvePosition`）取代；
+   `kPositionCorrectionFactor` 常量随之移除（偏差登记见 `dev-interfaces.md` 第 5 节）。
 
-### 4.2 Week 3: Sequential Impulse（法向）
+### 4.2 Week 5: 摩擦 + warm starting（速度层）
 
-`Solver/ContactSolver.h` 的约定（与设计文档 6.4 / P08 一致）：
+`Solver/ContactSolver.h` 的约定（与设计文档 6.4 / P09 一致）——法向约束沿用 §4.2 之前的公式，
+新增切向约束与 warm start：
 
-- **有效质量**：`K_n = invMassA + invMassB + invIA·Cross(rA,n)² + invIB·Cross(rB,n)²`；
-  求解器缓存 `normalMass = 1/K_n`。`K_n` 非正的接触点（两个无限质量物体/退化）被跳过并 debug assert。
-- **相对速度**：`vRel = (vB + ωB×rB) − (vA + ωA×rA)`，`vn = Dot(vRel, normal)`。
-- **单次迭代**：`λ = -(vn + bias) · normalMass`；累计钳制
-  `newAcc = max(acc + λ, 0)`、`Δλ = newAcc − acc`；把 `Δλ·n` 以线性+角速度增量施加到 A(−)/B(+)。
-- **restitution bias**：`Prepare` 时记录初始接近速度 `vn0 < 0`；仅当 `−vn0 > restitutionThreshold`
-  时 `bias = e · vn0`（负值），使目标相对法向速度变成 `−e·vn0`（分离）。
-  低速接触 bias=0，避免静止堆叠在微小接近速度下永远弹跳。
-- **持久化**：本帧累计冲量写回 `ContactPoint::normalImpulse`；Week 3 每帧从 0 开始（无 warm start），
-  Week 5 才改为跨帧继承 + `WarmStart` 施加。
-- **迭代次数**：`World::Step(dt, velocityIterations, positionIterations)` 的两个计数现在真正生效
-  （W3 只用 velocityIterations；positionIterations 在 W5 的位置迭代使用）。
-- 无摩擦/无 warm start/无 split impulse：这些是 Week 5 的增量，`ContactConstraintPoint` 已预留扩展空间。
+- **切向基**：2D 中切向唯一，`t = Skew(normal)`；`K_t` 与 `K_n` 同形（把 normal 换成 tangent）。
+- **摩擦锥**：`λt = −(vRel·t)/K_t`；`maxF = μ·accN_new`；**钳累计值**
+  `accT = Clamp(accT + λt, −maxF, +maxF)`，`Δλt = accT_new − accT_old` 施加为 `Δλt·t`。
+  法向先解、切向后解：摩擦锥半径必须用**更新后**的 accN，否则锥可能在施加切向冲量后收缩。
+- **μ 来源**：`contact.friction`（World 在建接触时算 `sqrt(μA·μB)`），求解器不再组合。
+- **warm start**：`Prepare` 读 `ContactPoint` 的继承冲量并播种 `acc = inherited·warmStartFactor`
+  （`useWarmStarting=false` 或 `isPersistent=false` 时播种 0）；`WarmStart` 施加 `accN·n + accT·t` 一次；
+  `SolveVelocity` 迭代后把累计值写回 `ContactPoint`。
+  **默认 `warmStartFactor = 1.0`**：实测 factor<1 会每帧丢掉 (1−f) 的已收敛冲量、把 PGS 顺序偏差
+  重新注入，10 盒塔随 factor 降低单调提前倒塌（见 devlog W5 数据与偏差登记）。
+- **restitution**：`Prepare` 在 warm start **之前**捕获 `vn0`，`−vn0 > restitutionThreshold` 时
+  `bias = e·vn0`，否则 0。
+- **Baumgarte 对照基线**：仅当 `useSplitImpulse=false` 时，`Prepare` 额外加
+  `bias −= (β/dt)·max(0, penetration − linearSlop)`；这是一条速度约束，会向真实速度注入能量，
+  专门用于和 split impulse 做对比实验。
+
+### 4.3 Week 5: split impulse 位置层
+
+`Solver/ContactSolverPosition.cpp`（`ContactSolver::SolvePosition`）：
+
+1. **重算约束**：位置层在 `IntegratePositions` 之后运行，所以按**积分后的 transform** 重算
+   `rA/rB` 与 `K_n`（速度层的 cache 已过期一步）；锚点在生成时刻重合，因此
+   `separation_now = Dot(worldB − worldA, n)`、`penetration_now = manifold.penetration − separation_now`
+   （manifold 的 penetration 是生成时刻的，差值即时更新）。
+2. **伪速度迭代**：`target = (β/dt)·max(0, penetration_now − splitImpulseSlop)`；
+   `λp = −(pseudoVn − target)·K_n⁻¹`；**累计钳制 ≥ 0**（只能推开不能拉回）；
+   迭代 `positionIterations` 次（位置在迭代期间冻结，所以 target 恒定）。
+3. **一次积分 + 清零**：`xf.p += dt·pseudoLinearVelocity`（长度按 `maxLinearCorrection` 钳制）、
+   `xf.q = xf.q·Rot(clamp(dt·pseudoAngularVelocity, ±kMaxAngularCorrection))` 并归一化；
+   最后 `ClearPseudoVelocities`。**真实速度全程既不读也不写**——这是"不注入能量"的机制保证，
+   单测用逐位比较验证。伪速度每步必须清零，否则会变成求解器看不见的"免费速度"。
 
 ## 5. 已冻结的公共接口
 
@@ -200,7 +222,10 @@ Week 4 之后**不应再改签名**的接口（改动会波及后续 4 周与 te
 - `IBroadPhase`、`ContactID`、`Manifold`、`ContactPoint`、`Contact`（字段可追加，
   但既有字段语义不变）。
 - `Solver/ContactSolver.h` 的 `ContactSolver` 接口与 `ContactConstraintPoint` 字段
-  （Week 5 会**追加**切向/摩擦、warm start、split impulse 字段，不改已有语义）。
+  （Week 5 已**追加** `tangent`/`tangentMass`/`accumulatedTangentImpulse` 与
+  `WarmStart`/`SolvePosition`/`ClearPseudoVelocities`/`ComputeEffectiveTangentMass`/
+  `ComputePseudoRelativeVelocity`；`Prepare` 追加了默认参数 `dt`；既有字段语义不变）。
+  `ContactSolverPosition.cpp` 在 `src/CMakeLists.txt` 显式登记（core 源文件列表不 glob）。
 - `p2::Math` 全部函数签名。
 - `Settings.h` 常量名（只允许追加新常量）。
 
@@ -230,8 +255,11 @@ Week 4 之后**不应再改签名**的接口（改动会波及后续 4 周与 te
 
 | 层 | 内容 | 位置 |
 | --- | --- | --- |
-| L1 单测 | 数学库、形状质量/AABB（圆/平面/多边形）、解析碰撞（圆族/圆-多边形/多边形-平面）、SAT+裁剪（位姿矩阵/ContactID 稳定性/cache）、求解器数学、IDPool、accumulator、预留接口编译 | `tests/unit/` |
-| L2 组件 | 完整 Step 场景断言（坠落/钳制/销毁/形状附着/接触持久化/动量守恒/反弹高度/多边形叠放/确定性） | `tests/unit/test_world_*.cpp` |
+| L1 单测 | 数学库、形状质量/AABB（圆/平面/多边形）、解析碰撞（圆族/圆-多边形/多边形-平面）、SAT+裁剪（位姿矩阵/ContactID 稳定性/cache）、求解器数学（`K_n`/`K_t`/冲量响应/摩擦锥/摩擦角扫描/warm start 播种/split impulse 位置层）、IDPool、accumulator、预留接口编译 | `tests/unit/` |
+| L2 组件 | 完整 Step 场景断言（坠落/钳制/销毁/形状附着/接触持久化/动量守恒/反弹高度/多边形叠放/确定性/**10 方块 10 s 里程碑/warmFactor 对比/split impulse 能量对比**） | `tests/unit/test_world_*.cpp` |
 | L3 回归 | 预留（`tests/regression/`，W6-W7） | — |
+
+当前规模：**301 个 ctest 用例**（release 302；其中 15 个 death test 在沙箱内自动 SKIP，CI 执行）。
+W5 新增 17 个 solver 单测 + 6 个 World 稳定性测试，并把 W4 的「10 盒必塌」基线改成稳定期望。
 
 `ctest --preset all` 通过 `gtest_discover_tests` 把每个 TEST 变成独立 ctest 用例。

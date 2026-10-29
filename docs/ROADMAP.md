@@ -92,7 +92,7 @@
 - 测试 278（15 sandbox skip）；三 preset 全绿、0 警告。
 - 偏差：冷热拆分移到 W5 末（见 dev-interfaces 第 5 节）；`SetPolygon` 对近重复顶点是拒绝而非合并。
 
-## Week 5 · 稳定堆叠（本项目最难的一周）
+## Week 5 · 稳定堆叠（本项目最难的一周）✅
 
 | 日 | 任务 | DoD |
 | --- | --- | --- |
@@ -106,6 +106,24 @@
 
 要填：R8 剩余（摩擦锥/warm start/split impulse）、R15 冷热拆分（W4 移到 W5 末）、R18 参数暴露。
 
+**Week 5 验收结果（2026-10-29，tag `v0.5-stable-stack`）**
+- **里程碑达成**：10×1 m 方块塔、默认 8 速度迭代/3 位置迭代、600 步 = 10 s：最大穿透 **5.223 mm
+  （< 10 mm）**、顶层 y 9.47813 m、最大倾斜 0.0046 rad、|x| 峰值 0.031 m、末帧最大速度 7.2 mm/s、无 NaN；
+  testbed smoke 600 步 max_penetration **3.893 mm**、塔完整（11 bodies / 10 contacts / 20 points）。
+- 摩擦：20 格斜面摩擦角扫描全过（μ>tanθ 12 格 5 s 位移 ≤1.5 mm；μ<tanθ 8 格下滑）；1000 帧斜堆叠
+  `max|accT|/accN=0.5000`、锥外 violations=0；μ=0 时切向冲量恒 0。
+- Warm starting：默认 factor **1.0**（W1 计划的 0.85 实测会让 10 盒塔在 10 s 内倒，见 dev-interfaces 偏差）；
+  残差表精确等于手算 `0.5(1−f)g·dt`；`warmFactor=0` 与 `useWarmStarting=false` 逐位一致。
+- Split impulse：`ContactSolverPosition.cpp` 伪速度层替换 W2 位置推出；真实速度逐位不变、
+  伪速度每步清零；深穿透场景能量注入 on 0.000000 m/s vs Baumgarte off 1.139999 m/s。
+- testbed：4 面板（Testbed Controls / Solver Settings / Contacts / Status）+ FrictionRamp demo；
+  BoxStack/FallingBall/SphereStack 三个旧 demo 数据保持稳定（5.0 mm / 3.06 mm 穿透）。
+- 测试 **301**（debug/sanitize；release 302）全绿；三 preset 全绿、0 警告；
+  clean build+ctest：debug 31.8 s / release 41.0 s / sanitize 42.9 s。
+- 偏差：`kWarmStartFactor` 0.85→1.0、`kSplitImpulseSlop` 0.01→kLinearSlop、
+  `kPositionCorrectionFactor` 移除、`Prepare` 追加 dt 参数、冷热拆分二次顺延到 W6
+  （全部登记在 `docs/dev-interfaces.md` 第 5 节）。
+
 ## Week 6 · Broad Phase 替换与量化
 
 | 日 | 任务 | DoD |
@@ -118,7 +136,7 @@
 | D6 | Pyramid200/StressBenchmark | 切换宽相物理结果一致 |
 | D7 | headless 回归固化 + tag `v0.6-sap` | CI 新增 regression job |
 
-要填：R1/R2/R3/R13，R12 回归工具。
+要填：R1/R2/R3/R13，R12 回归工具，**R15 冷热拆分（W4→W5→W6 二次顺延）**。
 
 ## Week 7 · 岛屿与休眠 + 打磨
 
