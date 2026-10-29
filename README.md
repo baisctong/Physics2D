@@ -8,6 +8,7 @@
 **凸多边形 SAT + 裁剪式 Manifold + SATCache** + 法向 Sequential Impulse 求解器；
 Week 5-8 的接口已预留）。详细计划见 [`docs/ROADMAP.md`](docs/ROADMAP.md)，
 接口预留清单见 [`docs/dev-interfaces.md`](docs/dev-interfaces.md)。
+**换会话/接手开发先读 [`HANDOFF.md`](HANDOFF.md)**（现状、验证基线、Week 5 任务卡、红线与坑）。
 
 > 演示 GIF 将在稳定堆叠（Week 5）后录制：10 方块堆叠 / 200 物体 SAP 对比 / 500 物体休眠。
 
