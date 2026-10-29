@@ -46,6 +46,12 @@ param(
 
     [switch]$RunTests,
 
+    # Force a full rebuild (cmake --build --clean-first). On Chinese-locale MSVC
+    # the Ninja dependency graph misses header-only changes (docs/dev-setup.md
+    # section 6), so use this after editing a header before trusting an
+    # incremental build. Canonical clean builds (deleted build dir) never need it.
+    [switch]$Clean,
+
     [string]$Target = '',
 
     [int]$Jobs = 0
@@ -134,6 +140,15 @@ try {
     if ($isWindows) {
         Import-MsvcEnvironment
         Ensure-Ninja
+        # KNOWN LIMITATION (documented in docs/dev-setup.md section 6): on a
+        # Chinese-locale Visual Studio, cl.exe prints `/showIncludes` lines as
+        # "注意: 包含文件:" while CMake writes the UTF-8 form of that prefix into
+        # CMakeFiles/rules.ninja. Ninja compares raw bytes, so the localized
+        # prefix never matches and the recorded dependency list is EMPTY: editing
+        # a header does not trigger a recompile on an incremental build (VSLANG=
+        # 1033 does NOT help in this VS install - verified). Canonical clean
+        # builds are unaffected; for incremental work after header edits use
+        # `-Clean`. This is an environment limitation, not a project one.
     }
     elseif (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
         throw 'Ninja not found on PATH. Install it (apt install ninja-build) or use a generator preset.'
@@ -185,6 +200,7 @@ try {
     # ------------------------------------------------------------------
     Write-Host "[build] build" -ForegroundColor Cyan
     $buildArgs = @('--build', $buildPath)
+    if ($Clean) { $buildArgs += '--clean-first' }
     if ($Target) { $buildArgs += @('--target', $Target) }
     if ($Jobs -gt 0) { $buildArgs += @('--parallel', $Jobs) }
     & cmake @buildArgs
