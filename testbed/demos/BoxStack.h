@@ -1,22 +1,27 @@
 #pragma once
 
-// p2::BoxStackDemo - Week 4 scene: a tower of ten 1 m x 1 m boxes on the ground plane.
+// p2::BoxStackDemo - Week 4/5 scene: a tower of ten 1 m x 1 m boxes on the ground plane.
 //
-// Why this scene: Week 4 lands the polygon narrow phase (SAT + clipping), so the
-// engine can finally collide boxes. The tower is the first polygon stress test:
-// every box has to be supported by a two-point box-box manifold plus the ground
-// contact, and any error in the clipped contact points shows up as rocking.
+// Why this scene: Week 4 landed the polygon narrow phase (SAT + clipping), and the
+// tower is the first polygon stress test: every box has to be supported by a two-point
+// box-box manifold plus the ground contact, and any error in the clipped contact points
+// shows up as rocking. In Week 4 the solver had normal impulses only, so the tower was
+// expected to jitter, sink and slowly topple - that collapse was recorded as the W4
+// baseline.
 //
-// What the card expects: the solver in Week 4 still has normal impulses only - no
-// friction, no warm starting, no split impulse. A ten-box tower is therefore expected
-// to jitter, sink a few millimetres per contact and slowly tilt (it may eventually
-// topple). The demo deliberately does not compensate for that: the W4-vs-W5 comparison
-// (warm starting + friction + split impulse) is the point of the scene. The draw code
-// reads the polygon vertices back from the shape, so the wireframe always shows what
-// the collision code actually sees - not what the demo thinks it spawned.
+// Week 5 acceptance: with the friction cone + warm starting + split-impulse position
+// layer the same ten boxes must stand. The launch defaults (velocity iterations 8 from
+// SolverSettings, default friction 0.3 from BodyDef, restitution 0) are the shipped
+// configuration - the demo deliberately does not tune anything to make it pass. The
+// smoke check is: `--demo BoxStack --smoke 300 --hidden` -> 11 bodies, 10 contacts
+// (20 contact points), max penetration < 0.01 m and centres at y ~= 0.5..9.5.
+// The draw code reads the polygon vertices back from the shape, so the wireframe always
+// shows what the collision code actually sees - not what the demo thinks it spawned.
 //
 // Optional interaction: "Drop impact ball" adds a dynamic circle above the tower; that
-// exercises circle-vs-polygon contacts, the last analytic path completed in Week 4.
+// exercises circle-vs-polygon contacts (the last analytic path completed in Week 4).
+// Reset rebuilds the tower in place and keeps the surrounding World settings (the
+// DebugUI solver/material panels stay in effect).
 
 #include "Demo.h"
 

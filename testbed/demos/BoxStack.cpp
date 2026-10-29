@@ -11,6 +11,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -31,6 +32,14 @@ constexpr float kVelocityArrowScale = 0.10f;
 // sub-cm/s correction noise and drawing it would fill the screen with meaningless
 // arrows.
 constexpr float kVelocityArrowThresholdSquared = 0.02f * 0.02f;
+
+// Week 5 acceptance thresholds for the panel verdict. They mirror the task card
+// ("11 bodies, 10 contacts / 20 points, max penetration < 0.01 m, y ~= 0.5..9.5"),
+// not any solver tuning: the demo never adjusts the simulation to reach them.
+constexpr int32_t kExpectedContactCount = 10;
+constexpr float kExpectedMaxPenetration = 0.01f; // m
+constexpr float kStandingMaxTiltDegrees = 15.0f;
+constexpr float kStandingMinTopLayerY = 8.0f; // top layer centre should stay near 9.5 m
 
 // Layer-colour ramp: the tower is tall, and a per-layer hue shift makes it obvious
 // which boxes moved relative to each other when it starts to lean or topple. The layer
@@ -53,14 +62,17 @@ void BoxStackDemo::Setup(World& world) {
     CreateGround(world);
     CreateTower(world);
     std::printf("[BoxStack] static ground plane y=0 + %d dynamic boxes 1x1 m (hx=hy=0.5) at "
-                "y=0.5..9.5, density 1, restitution 0. Week 4: no friction / warm starting yet - "
-                "the tower is expected to collapse; Week 5 adds friction + warm starting\n",
+                "y=0.5..9.5, density 1, friction 0.3 (BodyDef default), restitution 0. Week 5: "
+                "friction cone + warm starting + split impulse - the tower is expected to stand "
+                "(smoke 300 steps: 11 bodies, 10 contacts, max penetration < 10 mm, y=0.5..9.5)\n",
                 kLayerCount);
 }
 
 void BoxStackDemo::Update(World& /*world*/, float /*dt*/) {
-    // Intentionally empty: no scripted motion and no auto-reset. A collapsing tower is
-    // a real Week 4 result (and the W5 comparison baseline), not a state to hide.
+    // Intentionally empty: no scripted motion and no auto-reset. The settled state is
+    // the measurement - a tower that drifts apart must stay visible, not be reset away.
+    // The DebugUI material sliders can still reproduce the old W4 collapse live
+    // (friction 0), which is a controlled comparison rather than hidden tuning.
 }
 
 void BoxStackDemo::Draw(Renderer& renderer, const World& world) {
@@ -118,24 +130,50 @@ void BoxStackDemo::Draw(Renderer& renderer, const World& world) {
 
 void BoxStackDemo::Ui(World& world) {
     ImGui::TextUnformatted("Ten 1x1 m boxes stacked on the ground plane (polygon SAT + clipping).");
-    ImGui::TextUnformatted(
-        "Week 4: no friction / warm starting yet - the tower is expected to collapse; Week 5 adds both.");
+    ImGui::TextUnformatted("Week 5: friction + warm starting + split impulse - the tower should stand, "
+                           "max penetration < 10 mm.");
 
     int32_t touchingContacts = 0;
+    int32_t contactPoints = 0;
     float maxPenetration = 0.0f;
     for (const Contact& contact : world.GetContacts()) {
         if (!contact.manifold.IsTouching()) {
             continue;
         }
         ++touchingContacts;
+        contactPoints += contact.manifold.pointCount;
         maxPenetration = std::max(maxPenetration, contact.manifold.penetration);
     }
-    ImGui::Text("Contacts: %d   max penetration: %.2f mm", touchingContacts,
-                maxPenetration * kMillimetersPerMeter);
+    ImGui::Text("Contacts: %d (expected %d)   points: %d   max penetration: %.2f mm", touchingContacts,
+                kExpectedContactCount, contactPoints, maxPenetration * kMillimetersPerMeter);
 
-    // Per-layer readout: height and tilt. These are the two numbers that show the
-    // Week 4 weakness directly (sinking and rocking), so they are printed per layer
-    // instead of an aggregate.
+    // Aggregate acceptance metrics. The smoke log in main.cpp prints the same numbers
+    // for automated checks; showing them live means a run can be judged on screen too.
+    float maxAbsTiltDegrees = 0.0f;
+    float topLayerCenterY = 0.0f;
+    for (int32_t layerIndex = 0; layerIndex < kLayerCount; ++layerIndex) {
+        const BodyHandle handle = m_boxes[static_cast<std::size_t>(layerIndex)];
+        if (!world.IsValid(handle)) {
+            continue;
+        }
+        maxAbsTiltDegrees = std::max(maxAbsTiltDegrees, std::fabs(world.GetAngle(handle) * kRadToDeg));
+        if (layerIndex == kLayerCount - 1) {
+            topLayerCenterY = world.GetPosition(handle).y;
+        }
+    }
+    ImGui::Text("Max |tilt|: %.2f deg   top layer y: %.3f m", maxAbsTiltDegrees, topLayerCenterY);
+
+    const bool meetsAcceptance =
+        touchingContacts >= kExpectedContactCount && maxPenetration < kExpectedMaxPenetration &&
+        maxAbsTiltDegrees < kStandingMaxTiltDegrees && topLayerCenterY > kStandingMinTopLayerY;
+    if (meetsAcceptance) {
+        ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.40f, 1.0f), "Verdict: STANDING (Week 5 acceptance met)");
+    } else {
+        ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.30f, 1.0f), "Verdict: NOT STABLE yet (see numbers above)");
+    }
+
+    // Per-layer readout: height and tilt. These are the two numbers that show sinking
+    // and rocking directly, so they are printed per layer instead of only aggregated.
     for (int32_t layerIndex = 0; layerIndex < kLayerCount; ++layerIndex) {
         const BodyHandle handle = m_boxes[static_cast<std::size_t>(layerIndex)];
         if (!world.IsValid(handle)) {
@@ -197,9 +235,13 @@ void BoxStackDemo::CreateTower(World& world) {
         bodyDef.type = BodyType::Dynamic;
         bodyDef.position = {0.0f, kFirstLayerCenterY + kLayerSpacing * static_cast<float>(layerIndex)};
         bodyDef.density = kDensity;
-        // Restitution 0: a resting tower must not bounce; all energy loss in Week 4
-        // comes from the solver's inelastic normal impulses.
+        // Restitution 0: a resting tower must not bounce; the settling energy is
+        // absorbed by the inelastic normal impulses and friction.
         bodyDef.restitution = 0.0f;
+        // Friction is intentionally left at the BodyDef default (0.3): the Week 5
+        // milestone has to be reached by the solver mechanism, not by scene-specific
+        // tuning. The DebugUI "Default friction" slider is the sanctioned way to run
+        // the friction=0 comparison.
         bodyDef.debugName = "box_" + std::to_string(layerIndex);
         const BodyHandle handle = world.CreateBody(bodyDef);
         if (!world.IsValid(handle)) {

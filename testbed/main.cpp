@@ -1,5 +1,6 @@
-// physics2d_testbed - interactive testbed entry point (Week 1 D5/D6, extended in
-// Week 2 with the contact overlay and in Weeks 3-4 with multiple selectable scenes).
+// physics2d_testbed - interactive testbed entry point (Week 1 D5/D6; contact
+// overlay in Week 2; selectable scenes in Weeks 3-4; Week 5 adds the Solver and
+// Contacts panels, the clickable contact highlight and the FrictionRamp scene).
 //
 // Responsibilities (and nothing else):
 //   1. Create the GLFW window / OpenGL 3.3 core context and initialise Dear ImGui
@@ -7,10 +8,14 @@
 //   2. Run the frame loop: poll input -> draw UI -> run fixed physics steps ->
 //      render world and UI -> swap.
 //   3. Own the World, the demo registry and the camera; demos only see those.
-//   4. Draw engine-level debug overlays (axes, AABBs, contact points and contact
-//      normals) after the demo. They live here because World owns that data and the
-//      Demo interface has no display-option parameter, so every scene gets the same
-//      debug view from one place.
+//   4. Draw engine-level debug overlays (axes, AABBs, contact points/normals, the
+//      highlighted contact and the optional velocity arrows) after the demo. They
+//      live here because World owns that data and the Demo interface has no
+//      display-option parameter, so every scene gets the same debug view from one
+//      place.
+//   5. Apply the DebugUI material defaults when a scene is built (Week 5 solver
+//      experiments: e.g. friction 0 on BoxStack). The solver settings themselves are
+//      written by DebugUI straight into World::SetSolverSettings.
 //
 // Fixed timestep: p2::StepAccumulator turns the variable frame time into a whole
 // number of 1/60 s steps (Section 4.3), at most kMaxStepsPerFrame per frame to stop
@@ -20,11 +25,12 @@
 // previous-state caching that does not exist until then.
 //
 // CLI:
-//   --demo NAME choose the initial scene (FallingBall | SphereStack | BoxStack,
-//               default FallingBall). Matching is case-insensitive and ignores spaces,
-//               underscores and hyphens, so "spherestack" and "Sphere Stack" both
-//               work. An unknown name prints the available list and exits with code
-//               2 so smoke automation can distinguish a typo from a physics failure.
+//   --demo NAME choose the initial scene (FallingBall | SphereStack | BoxStack |
+//               FrictionRamp, default FallingBall). Matching is case-insensitive and
+//               ignores spaces, underscores and hyphens, so "spherestack" and
+//               "Sphere Stack" both work. An unknown name prints the available list
+//               and exits with code 2 so smoke automation can distinguish a typo
+//               from a physics failure.
 //   --smoke N   render N frames, print a machine-checkable summary, exit 0.
 //               In smoke mode the loop feeds the accumulator a deterministic
 //               1/60 s per frame, so N frames == N physics steps regardless of
@@ -38,6 +44,7 @@
 #include "Renderer.h"
 #include "demos/BoxStack.h"
 #include "demos/FallingBall.h"
+#include "demos/FrictionRamp.h"
 #include "demos/SphereStack.h"
 
 #include "physics2d/Core/Settings.h"
@@ -49,6 +56,7 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
@@ -84,6 +92,19 @@ constexpr float kContactArrowHeadLength = 0.15f;
 constexpr p2::Color kContactPointColor{0.95f, 0.25f, 0.25f, 1.0f};
 constexpr p2::Color kContactNormalColor{1.00f, 0.85f, 0.20f, 1.0f};
 
+// Contact highlighted in the DebugUI Contacts panel: bigger marker, longer arrow and
+// a cyan no scene uses, so the clicked pair stays identifiable over any demo colour.
+constexpr float kHighlightedContactPointRadius = 0.12f;
+constexpr float kHighlightedContactNormalLength = 1.0f;
+constexpr p2::Color kHighlightedContactColor{0.20f, 0.90f, 1.00f, 1.0f};
+
+// Engine-level velocity overlay (DebugUI "Velocity arrows"): scenes that do not draw
+// their own arrows can use it. A blue distinct from the demos' green on purpose - a
+// doubled view must not look like one arrow.
+constexpr float kVelocityArrowScale = 0.10f;
+constexpr float kVelocityArrowThresholdSquared = 0.02f * 0.02f;
+constexpr p2::Color kVelocityArrowColor{0.30f, 0.75f, 1.00f, 1.0f};
+
 struct CommandLineOptions {
     int smokeFrames = 0; // 0 means interactive mode
     bool hidden = false;
@@ -96,8 +117,8 @@ struct CommandLineOptions {
 // turns the usage line into mojibake.
 void PrintUsage() {
     std::printf("Usage: physics2d_testbed [--demo NAME] [--smoke N] [--hidden] [--help]\n"
-                "  --demo NAME start in this scene (FallingBall | SphereStack | BoxStack;\n"
-                "              default FallingBall).\n"
+                "  --demo NAME start in this scene (FallingBall | SphereStack | BoxStack |\n"
+                "              FrictionRamp; default FallingBall).\n"
                 "              Matching is case-insensitive and ignores spaces/underscores.\n"
                 "  --smoke N   render N frames, print a summary and exit (0 = pass, 2 = no GL environment\n"
                 "              or unknown demo name)\n"
@@ -207,41 +228,88 @@ void GlfwErrorCallback(int errorCode, const char* description) {
     return -1;
 }
 
-// ---- contact debug overlay (Week 2) -----------------------------------------
+// ---- contact / velocity debug overlays (Week 2, extended Week 5) --------------
 // Contact points are the manifold anchors. A point is stored in each body's local
 // frame (localPointA/localPointB); both describe the same world position, so
 // transforming one with its owner's transform is enough.
 
-void DrawContactPoints(p2::Renderer& renderer, const p2::World& world) {
+[[nodiscard]] bool IsHighlightedContact(const p2::Contact& contact,
+                                        const p2::DebugUI::DisplayOptions& display) noexcept {
+    return display.highlightedContactBodyA.IsValid() && contact.bodyA == display.highlightedContactBodyA &&
+           contact.bodyB == display.highlightedContactBodyB;
+}
+
+// One pass over the touching contacts draws every point and/or normal the display
+// options ask for. The contact highlighted in the Contacts panel is always drawn
+// (larger, cyan), so clicking a row has a visible effect even when the normal
+// overlay is off - that is what the panel's "click to inspect" hint promises.
+void DrawContactOverlay(p2::Renderer& renderer, const p2::World& world,
+                        const p2::DebugUI::DisplayOptions& display) {
     for (const p2::Contact& contact : world.GetContacts()) {
         if (!contact.manifold.IsTouching()) {
             continue;
         }
+        const bool highlighted = IsHighlightedContact(contact, display);
+        const bool drawPoints = display.showContacts || highlighted;
+        const bool drawNormals = display.showNormals || highlighted;
+        if (!drawPoints && !drawNormals) {
+            continue;
+        }
+        const float pointRadius = highlighted ? kHighlightedContactPointRadius : kContactPointRadius;
+        const float normalLength = highlighted ? kHighlightedContactNormalLength : kContactNormalLength;
+        const p2::Color pointColor = highlighted ? kHighlightedContactColor : kContactPointColor;
+        const p2::Color normalColor = highlighted ? kHighlightedContactColor : kContactNormalColor;
+        // The manifold normal points from body A toward body B (Section 4.2,
+        // normative). World normalises the pair order by body handle index, so in
+        // most scenes the ground is created first and is therefore A: the arrow
+        // points up out of the surface. The overlay draws the stored direction and
+        // never flips it locally, exactly like the solver, so a wrong normal
+        // convention stays visible instead of being masked.
         const p2::Transform transformA = world.GetTransform(contact.bodyA);
         for (int32_t pointIndex = 0; pointIndex < contact.manifold.pointCount; ++pointIndex) {
             const p2::Vec2 worldPoint = p2::Mul(transformA, contact.manifold.points[pointIndex].localPointA);
-            renderer.DrawCircle(worldPoint, kContactPointRadius, kContactPointColor, 12);
-            renderer.DrawPoint(worldPoint, kContactPointColor, kContactPointRadius);
+            if (drawPoints) {
+                renderer.DrawCircle(worldPoint, pointRadius, pointColor, 12);
+                renderer.DrawPoint(worldPoint, pointColor, pointRadius);
+            }
+            if (drawNormals) {
+                renderer.DrawArrow(worldPoint, worldPoint + contact.manifold.normal * normalLength,
+                                   normalColor, kContactArrowHeadLength);
+            }
         }
     }
 }
 
-// The manifold normal points from body A toward body B (Section 4.2, normative).
-// World normalises the pair order by body handle index, so in this scene the ground
-// is created first and is therefore A: the arrow points up out of the surface. The
-// overlay draws the stored direction and never flips it locally, exactly like the
-// solver, so a wrong normal convention stays visible instead of being masked.
-void DrawContactNormals(p2::Renderer& renderer, const p2::World& world) {
-    for (const p2::Contact& contact : world.GetContacts()) {
-        if (!contact.manifold.IsTouching()) {
+// Optional engine-level velocity arrows for every non-static body. Kept separate
+// from the per-scene arrows (most demos draw their own): this one exists for scenes
+// that do not, and for a quick "which body is still moving" scan.
+void DrawVelocityOverlay(p2::Renderer& renderer, const p2::World& world) {
+    for (const p2::Body& body : world.GetBodies()) {
+        if (!body.handle.IsValid() || !world.IsValid(body.handle) || body.type == p2::BodyType::Static) {
             continue;
         }
-        const p2::Transform transformA = world.GetTransform(contact.bodyA);
-        for (int32_t pointIndex = 0; pointIndex < contact.manifold.pointCount; ++pointIndex) {
-            const p2::Vec2 worldPoint = p2::Mul(transformA, contact.manifold.points[pointIndex].localPointA);
-            renderer.DrawArrow(worldPoint, worldPoint + contact.manifold.normal * kContactNormalLength,
-                               kContactNormalColor, kContactArrowHeadLength);
+        const p2::Vec2 velocity = world.GetLinearVelocity(body.handle);
+        if (p2::LengthSquared(velocity) <= kVelocityArrowThresholdSquared) {
+            continue;
         }
+        const p2::Vec2 position = world.GetPosition(body.handle);
+        renderer.DrawArrow(position, position + velocity * kVelocityArrowScale, kVelocityArrowColor);
+    }
+}
+
+// ---- Week 5 material defaults ------------------------------------------------
+// The DebugUI material sliders are experiment defaults ("set friction to 0 and the
+// ten-box tower must collapse"). They are written onto every body when a scene is
+// built and on demand from the panel. Static bodies are included on purpose: the
+// contact combines friction as sqrt(fA*fB) and restitution as max(eA,eB), so
+// skimming the ground would silently change the experiment value.
+void ApplyMaterialDefaults(p2::World& world, const p2::DebugUI::MaterialDefaults& material) {
+    for (const p2::Body& body : world.GetBodies()) {
+        if (!body.handle.IsValid() || !world.IsValid(body.handle)) {
+            continue;
+        }
+        world.SetFriction(body.handle, material.friction);
+        world.SetRestitution(body.handle, material.restitution);
     }
 }
 
@@ -346,6 +414,7 @@ int RunTestbed(const CommandLineOptions& options) {
     demos.push_back(std::make_unique<p2::FallingBallDemo>());
     demos.push_back(std::make_unique<p2::SphereStackDemo>());
     demos.push_back(std::make_unique<p2::BoxStackDemo>());
+    demos.push_back(std::make_unique<p2::FrictionRampDemo>());
     std::vector<const char*> demoNames;
     demoNames.reserve(demos.size());
     for (const std::unique_ptr<p2::Demo>& demo : demos) {
@@ -437,11 +506,14 @@ int RunTestbed(const CommandLineOptions& options) {
     // The registry and the CLI selection were resolved above; this is the only part
     // that needs the (now fully initialized) simulation/render stack.
     p2::World world;
-    demos[static_cast<std::size_t>(selectedDemo)]->Setup(world);
-
     p2::StepAccumulator accumulator(p2::kFixedTimeStep, p2::kMaxStepsPerFrame);
+    // DebugUI is constructed before the first scene build so the material defaults
+    // (Week 5 solver experiments) are applied uniformly to the initial scene and to
+    // every later scene switch.
     p2::DebugUI debugUi;
     p2::DebugUI::DisplayOptions displayOptions;
+    demos[static_cast<std::size_t>(selectedDemo)]->Setup(world);
+    ApplyMaterialDefaults(world, debugUi.GetMaterialDefaults());
 
     using Clock = std::chrono::steady_clock;
     Clock::time_point previousFrameTime = Clock::now();
@@ -509,6 +581,13 @@ int RunTestbed(const CommandLineOptions& options) {
             world.Clear();
             demos[static_cast<std::size_t>(selectedDemo)]->Setup(world);
             accumulator.Reset();
+            // Week 5: a newly built scene picks up the panel's material defaults
+            // (friction/restitution experiments). Reset() deliberately does not: a
+            // demo's own Reset keeps the material state the user tuned in its Ui.
+            ApplyMaterialDefaults(world, debugUi.GetMaterialDefaults());
+        }
+        if (actions.applyMaterialDefaultsRequested) {
+            ApplyMaterialDefaults(world, debugUi.GetMaterialDefaults());
         }
         if (actions.resetRequested) {
             demos[static_cast<std::size_t>(selectedDemo)]->Reset(world);
@@ -560,14 +639,12 @@ int RunTestbed(const CommandLineOptions& options) {
 
         renderer.Begin(camera);
         currentDemo.Draw(renderer, world);
-        // Contact overlay before the static debug geometry so the contact markers are
-        // the brightest thing on screen when a contact exists.
-        if (displayOptions.showContacts) {
-            DrawContactPoints(renderer, world);
+        // Engine-level overlays before the static debug geometry so the contact
+        // markers are the brightest thing on screen when a contact exists.
+        if (displayOptions.showVelocities) {
+            DrawVelocityOverlay(renderer, world);
         }
-        if (displayOptions.showNormals) {
-            DrawContactNormals(renderer, world);
-        }
+        DrawContactOverlay(renderer, world, displayOptions);
         if (displayOptions.showAxes) {
             renderer.DrawAxes(5.0f);
         }
@@ -612,13 +689,45 @@ int RunTestbed(const CommandLineOptions& options) {
             frameIndex > 0 ? totalFrameMilliseconds / static_cast<double>(frameIndex) : 0.0;
         const p2::Demo& reportedDemo = *demos[static_cast<std::size_t>(selectedDemo)];
         const std::string compactDemoName = CompactSceneName(reportedDemo.Name());
-        // One machine-readable line for automated verification: scene id, counts and
-        // timing. The per-body / per-contact lines below carry the state a verdict
-        // actually needs (final heights and velocities, and which pairs still touch).
+
+        // Contact aggregates for the one-line verdict. "contacts" counts touching
+        // manifolds, "contact_points" counts the individual anchors (two for a
+        // face-face manifold, one for a vertex/circle hit), and the penetration is the
+        // milestone metric (10-box tower: < 10 mm).
+        int32_t touchingContactCount = 0;
+        int32_t contactPointCount = 0;
+        float maxPenetration = 0.0f;
+        for (const p2::Contact& contact : world.GetContacts()) {
+            if (!contact.manifold.IsTouching()) {
+                continue;
+            }
+            ++touchingContactCount;
+            contactPointCount += contact.manifold.pointCount;
+            maxPenetration = std::max(maxPenetration, contact.manifold.penetration);
+        }
+
+        // One machine-readable line for automated verification: scene id, counts,
+        // penetration and timing. The per-body / per-contact lines below carry the
+        // state a verdict actually needs (final heights and velocities, which pairs
+        // still touch, and the accumulated solver impulses).
+        std::printf("[smoke] demo=%s frames=%d physics_steps=%d bodies=%d shapes=%d contacts=%d "
+                    "contact_points=%d max_penetration_mm=%.3f avg_frame_ms=%.3f\n",
+                    compactDemoName.c_str(), frameIndex, totalPhysicsSteps, world.GetBodyCount(),
+                    world.GetShapeCount(), touchingContactCount, contactPointCount, maxPenetration * 1000.0f,
+                    averageFrameMilliseconds);
+
+        // The solver configuration the run actually used: quoting smoke numbers
+        // without these would make a warm-start / split-impulse comparison meaningless.
+        const p2::SolverSettings& solverSettings = world.GetSolverSettings();
         std::printf(
-            "[smoke] demo=%s frames=%d physics_steps=%d bodies=%d shapes=%d contacts=%d avg_frame_ms=%.3f\n",
-            compactDemoName.c_str(), frameIndex, totalPhysicsSteps, world.GetBodyCount(),
-            world.GetShapeCount(), world.GetContactCount(), averageFrameMilliseconds);
+            "[smoke] solver velocity_iterations=%d position_iterations=%d warm_starting=%d "
+            "warm_start_factor=%.2f split_impulse=%d split_impulse_beta=%.2f linear_slop_m=%.4f "
+            "sat_cache=%d gravity_y=%.1f\n",
+            solverSettings.velocityIterations, solverSettings.positionIterations,
+            solverSettings.useWarmStarting ? 1 : 0, static_cast<double>(solverSettings.warmStartFactor),
+            solverSettings.useSplitImpulse ? 1 : 0, static_cast<double>(solverSettings.splitImpulseBeta),
+            static_cast<double>(solverSettings.linearSlop), solverSettings.useSatCache ? 1 : 0,
+            static_cast<double>(world.GetGravity().y));
 
         // 16 bodies / 16 contacts covers the largest current scene (BoxStack: 11 bodies,
         // 10 contacts) without turning the smoke log into a wall of text.
@@ -630,8 +739,8 @@ int RunTestbed(const CommandLineOptions& options) {
             }
             const p2::Vec2 position = world.GetPosition(body.handle);
             const p2::Vec2 velocity = world.GetLinearVelocity(body.handle);
-            // Angle is reported in degrees: the Week 4 acceptance check for BoxStack is
-            // "how far did each box tilt", and radians are hard to judge in a log.
+            // Angle is reported in degrees: the acceptance check for BoxStack is "how
+            // far did each box tilt", and radians are hard to judge in a log.
             const float angleDegrees = world.GetAngle(body.handle) * p2::kRadToDeg;
             std::printf("[smoke] body='%s' position=(%.3f, %.3f) velocity=(%.3f, %.3f) angle=%.2fdeg\n",
                         body.debugName.c_str(), position.x, position.y, velocity.x, velocity.y, angleDegrees);
@@ -640,22 +749,31 @@ int RunTestbed(const CommandLineOptions& options) {
             }
         }
 
-        // Contact state: pair names, manifold point count and penetration in mm. A
-        // resting tower prints its contacts here, which is how the log tells a
-        // standing stack apart from a collapsed one that scattered into free fall.
+        // Contact state: pair names, manifold point count, penetration in mm and the
+        // accumulated impulses (summed over the manifold points). A resting tower
+        // prints its contacts here, which is how the log tells a standing stack apart
+        // from a collapsed one that scattered into free fall; normal_impulse > 0 with
+        // |tangent_impulse| <= mu*normal_impulse is the friction-cone evidence.
         constexpr int kMaxContactsPrinted = 16;
         int printedContactCount = 0;
         for (const p2::Contact& contact : world.GetContacts()) {
             if (!contact.manifold.IsTouching()) {
                 continue;
             }
+            float normalImpulse = 0.0f;
+            float tangentImpulse = 0.0f;
+            for (int32_t pointIndex = 0; pointIndex < contact.manifold.pointCount; ++pointIndex) {
+                normalImpulse += contact.manifold.points[pointIndex].normalImpulse;
+                tangentImpulse += contact.manifold.points[pointIndex].tangentImpulse;
+            }
             const p2::Body* bodyA = world.GetBody(contact.bodyA);
             const p2::Body* bodyB = world.GetBody(contact.bodyB);
-            std::printf("[smoke] contact '%s'|'%s' points=%d penetration=%.3fmm normal=(%.3f, %.3f)\n",
+            std::printf("[smoke] contact '%s'|'%s' points=%d penetration=%.3fmm normal=(%.3f, %.3f) "
+                        "normal_impulse=%.3f tangent_impulse=%.3f\n",
                         bodyA != nullptr ? bodyA->debugName.c_str() : "?",
                         bodyB != nullptr ? bodyB->debugName.c_str() : "?", contact.manifold.pointCount,
                         contact.manifold.penetration * 1000.0f, contact.manifold.normal.x,
-                        contact.manifold.normal.y);
+                        contact.manifold.normal.y, normalImpulse, tangentImpulse);
             if (++printedContactCount >= kMaxContactsPrinted) {
                 break;
             }
