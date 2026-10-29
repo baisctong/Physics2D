@@ -1,0 +1,7 @@
+# physics2d_regression golden v1
+scene=tower30+circles20
+frames=600
+bodies=51
+contacts=83
+hash=588d30e70f9b4ddd
+exact=f4390ef86c075a04

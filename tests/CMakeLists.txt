@@ -31,7 +31,20 @@ gtest_discover_tests(physics2d_tests
     PROPERTIES LABELS "unit")
 
 # ---------------------------------------------------------------------------
-# Reserved: headless determinism regression tool (Week 6-7, P16). The target
-# will be added here together with tests/regression/regression_main.cpp; the
-# directory already exists so the future layout is documented.
+# Determinism regression tool (Week 6, P16). It replays a fixed scene headlessly
+# and compares a QUANTISED state hash against a committed golden file; only core
+# is linked, so the CI headless job can run it without a renderer. The golden
+# value is compiler/platform-portable because of the quantisation (see
+# tests/regression/README.md) - do not replace it with a raw float-bit hash.
 # ---------------------------------------------------------------------------
+add_executable(physics2d_regression regression/regression_main.cpp)
+add_executable(p2::regression ALIAS physics2d_regression)
+target_link_libraries(physics2d_regression PRIVATE physics2d_core)
+p2_apply_project_warnings(physics2d_regression)
+p2_apply_sanitizers(physics2d_regression)
+
+# Plain CTest entry (not a gtest case): the tool has its own CLI and exit codes.
+add_test(NAME regression_default
+         COMMAND physics2d_regression --check
+                 ${CMAKE_CURRENT_SOURCE_DIR}/regression/golden/default_600.txt)
+set_tests_properties(regression_default PROPERTIES LABELS "regression")

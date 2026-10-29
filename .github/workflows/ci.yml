@@ -102,6 +102,27 @@ jobs:
         run: ctest --preset headless --output-on-failure
 
   # ---------------------------------------------------------------------------
+  # Determinism regression (Week 6 D7): the headless tool replays a fixed scene
+  # (600 steps) and compares a QUANTISED state hash against the committed golden
+  # file. The quantised hash (MathUtils weak hash) is what makes the golden file
+  # portable across compilers/OSes; the exact float-bit hash is printed for
+  # debugging only. Exit codes: 0 match, 1 mismatch, 2 usage error.
+  # ---------------------------------------------------------------------------
+  regression:
+    name: determinism regression (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lukka/get-cmake@latest
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - name: Configure headless
+        run: cmake --preset headless
+      - name: Build regression tool
+        run: cmake --build --preset headless --target physics2d_regression
+      - name: Replay the golden scene
+        run: ./build/headless/tests/physics2d_regression --check tests/regression/golden/default_600.txt
+
+  # ---------------------------------------------------------------------------
   # Layering guard (Section 1.2 "铁律"): physics2d_core must never include a
   # rendering / windowing / UI header. Tracy is the single documented exception
   # (Profiler.h, only under TRACY_ENABLE).
