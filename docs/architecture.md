@@ -1,4 +1,4 @@
-# 架构说明（Week 1-5）
+# 架构说明（Week 1-6）
 
 > 本文描述**当前已实现**的架构，以及为 Week 2-8 预留的挂载点。
 > 公式推导见设计文档第 6 章与未来 `docs/math.md`；接口预留清单见 `docs/dev-interfaces.md`。
@@ -10,8 +10,8 @@ flowchart TD
     subgraph Layer1["Layer 1 · physics2d_core（零第三方依赖，可 headless）"]
         Math["Math<br/>Vec2 / Mat2 / Rot / Transform / AABB / MathUtils"]
         Core["Core<br/>World / Body / BodyDef / Handle / IDPool / TimeStep / Settings / IBroadPhase / Profiler"]
-        Collision["Collision（预留 W2-W6）<br/>ContactID / Manifold / SAT / SAP / Shapes"]
-        Solver["Solver（预留 W3-W7）<br/>Contact / ContactSolver / Island"]
+        Collision["Collision<br/>ContactID / Manifold / Shapes / SAT / Analytic / BroadPhase{BruteForce,SAP}"]
+        Solver["Solver<br/>ContactSolver（速度层 + 位置层）/ Contact / Island（W7）"]
         Math --> Core
         Core --> Collision
         Collision --> Solver
@@ -45,8 +45,8 @@ CI 的 `layering` job 用 grep 强制这条规则，headless job 则证明核心
 | --- | --- | --- |
 | `Math` | 值语义向量/旋转/变换/AABB、数学常量、FNV-1a hash | 任何物理语义、任何 I/O |
 | `Core` | World 生命周期、Step 流水线、Body/Shape 池、句柄/ID 池、固定步长、Settings、接触列表、可插拔宽相接口、Profiler 钩子 | SAT/裁剪（W4）、冲量求解（W3）、岛屿休眠（W7） |
-| `Collision` | 形状数据（Circle/Plane/**Polygon**）、解析碰撞（圆族 + 圆-多边形 + 多边形-平面）、**SAT + 裁剪式 Manifold**、SATCache、ContactID、Contact 数据 | 冲量求解 |
-| `Solver` | **W3：法向 Sequential Impulse**（`ContactSolver`：K_n、累计冲量钳制、迭代、restitution bias）；W5 摩擦/warm starting/split impulse；W7 岛屿休眠与按岛求解 | 渲染、UI、宽相 |
+| `Collision` | 形状数据（Circle/Plane/**Polygon**）、解析碰撞（圆族 + 圆-多边形 + 多边形-平面）、**SAT + 裁剪式 Manifold**、SATCache、ContactID、Contact 数据；**W6：宽相实现 `BroadPhaseBruteForce` + `BroadPhaseSAP`** | 冲量求解 |
+| `Solver` | **W3：法向 Sequential Impulse**；**W5：摩擦锥 + warm starting + split impulse 位置层**；W7 岛屿休眠与按岛求解 | 渲染、UI、宽相 |
 | `testbed` | 窗口/输入/渲染/ImGui/相机/Demo | 任何物理算法 |
 | `tests` | 单测（L1）+ 场景断言（L2） | 性能结论（bench 负责） |
 | `bench`（预留） | headless 宽相/求解器基准 | 渲染 |
@@ -56,21 +56,23 @@ CI 的 `layering` job 用 grep 强制这条规则，headless job 则证明核心
 
 ## 3. 关键数据布局
 
-### 3.1 Body：冷热分离（Week 1 单结构，拆分顺延到 Week 6）
+### 3.1 Body：冷热分离（Week 1 单结构，拆分顺延到 Week 7）
 
 `include/physics2d/Core/Body.h` 按设计文档 3.3 节把字段分成两组，并在注释里标出：
 
 - **冷数据**（组织性，用户/UI 访问）：`handle`、`type`、`shape`、材质参数、`allowSleep`、
   `isAwake`、`userData`、`debugName`。
 - **热数据**（积分器/求解器每帧读写）：`xf`、`linearVelocity`、`angularVelocity`、
-  `pseudoLinearVelocity`/`pseudoAngularVelocity`（Week 5 追加，split impulse 专用）、
-  `force`/`torque`、质量与逆质量、`sleepTime`、`islandId`、`aabb`。
+  `pseudoLinearVelocity`/`pseudoAngularVelocity`（W5 追加，split impulse 专用）、
+  `force`/`torque`、质量与逆质量、`sleepTime`、`islandId`、`aabb`（W6 起为 fat AABB）、
+  `proxyId`（W6 追加，宽相 bookkeeping）。
 
-Week 1-5 用单一 `Body` 结构跑通；原计划 Week 4 的**冷热拆分**（`Body` 冷 + `BodySim`/`BodyState`
-并行数组）W4 顺延到 W5、W5 再顺延到 **W6**（理由见 `docs/dev-interfaces.md` 第 5 节：求解器周不做
-跨模块重构，避免里程碑回归无法定位）。为了让这次拆分不动外部代码，`World` 的公共 API 只暴露
-**基本类型访问器**（`GetPosition` / `GetLinearVelocity` / `GetMass` …），`GetBody()` / `GetBodies()`
-明确标注为 debug/testbed 用途。
+Week 1-6 用单一 `Body` 结构跑通；原计划 Week 4 的**冷热拆分**（`Body` 冷 + `BodySim`/`BodyState`
+并行数组）W4→W5→W6 顺延，现定 **W7**（理由见 `docs/dev-interfaces.md` 第 5 节：W5 求解器周、
+W6 又改了 hot block 的 `proxyId` 与 `aabb` 语义，同一批 213 个热字段访问点一年内改两次会让回归
+定位成本翻倍；W7 岛屿周本来就要碰 body 存储）。为了让这次拆分不动外部代码，`World` 的公共 API
+只暴露**基本类型访问器**（`GetPosition` / `GetLinearVelocity` / `GetMass` …），
+`GetBody()` / `GetBodies()` 明确标注为 debug/testbed 用途。
 
 ### 3.2 Handle 与 IDPool
 
@@ -120,8 +122,34 @@ flowchart LR
   → `Prepare` 播种 → `WarmStart` 施加 → `SolveVelocity` 写回。设计文档把 `Contact` 放在 Solver，
   但它是窄相输出且 World 必须持有列表，所以 Week 2 把文件移到 `Collision/Contact.h`
   （字段语义保持不变，见 `docs/dev-interfaces.md` 偏差登记）。
-- Week 2 的配对枚举仍是 **O(N²) + AABB 过滤**（`Body::aabb` 在 `Synchronize()` 里由形状算出），
-  `UpdateBroadPhase()` 保持空实现；Week 6 只替换枚举来源（`IBroadPhase`），接触数据契约不变。
+- Week 2-5 的配对枚举是 **O(N²) + AABB 过滤**（`Body::aabb` 在 `Synchronize()` 里由形状算出）。
+  **Week 6** 把它换成可插拔宽相（见 §4.4）：`UpdateBroadPhase` 把 body 的 fat AABB 同步给
+  `IBroadPhase` 的 proxy，`QueryPairs` 的候选对规范化为 body-index 对后再进窄相；没有安装宽相时
+  仍走 O(N²) fallback。接触数据契约完全不变。
+- **`Body::aabb` 的语义（W6 起）= fat AABB**：`Synchronize` 先算 tight `ComputeShapeAABB`，
+  再 `Extend(kAabbMargin = 0.1 m)`。平面是 `kPlaneAabbExtent`(1e6 m) 超大盒，加 margin 无实际影响。
+  fat margin 只扩大候选集，接触的最终判定永远在窄相。
+
+### 3.6 宽相数据流（Week 6）
+
+```mermaid
+flowchart LR
+    S["World::Synchronize()<br/>tight AABB + kAabbMargin"] --> A["Body::aabb (fat)"]
+    A --> UB["World::UpdateBroadPhase(dt)"]
+    UB -->|"AddProxy / UpdateAABB / RemoveProxy"| BP["IBroadPhase<br/>BruteForce | SAP"]
+    BP -->|"QueryPairs(proxyIdA, proxyIdB)"| MAP["Body::proxyId ↔ m_proxyToBody"]
+    MAP --> CANON["canonical pairs (i&lt;j, sorted, unique)"]
+    CANON --> UC["World::UpdateContacts()<br/>CreateContactForPair (same narrow phase as the O(N²) fallback)"]
+    UC --> CL["World::m_contacts"]
+```
+
+- proxy↔body 映射由 World 维护：`Body::proxyId`（前向，-1 = 无 proxy）+ `World::m_proxyToBody`
+  （反向，proxy id → body slot index）。`IBroadPhase` 只知道 AABB，不认识 Body（Section 4.5 契约）。
+- `UpdateBroadPhase` 在 phase 2 运行，用的是**上一步** `Synchronize` 写下的 AABB（离散宽相的标准一步滞后）；
+  fat margin 吸收这一步内的小位移。proxy 每步刷新，所以不需要速度外推。
+- **顺序规范化是物理正确性的一部分**：接触列表顺序决定 PGS 求解顺序，因此候选对必须排序 + 去重，
+  否则"切宽相"会改变最后几位浮点。验收见 §6 与 `docs/dev-interfaces.md` W6 不变量。
+
 
 ### 3.5 多边形与 SAT Manifold（Week 4）
 
@@ -141,20 +169,20 @@ flowchart LR
 - 其余解析路径：圆-多边形（最近边/顶点 Voronoi 区域，P06）、多边形-平面（顶点深度，盒底两顶点
   都贴地时返回 2 点，是 BoxStack 稳定支撑的关键）。
 
-## 4. World::Step 流水线（固定顺序，Week 1-5 已实现 9 个阶段）
+## 4. World::Step 流水线（固定顺序，Week 1-6 已实现 10 个阶段）
 
 | # | 阶段 | 当前状态 | 预留方法 |
 | --- | --- | --- | --- |
 | 1 | 积分力 → 速度（semi-implicit） | ✅ 已实现 | `IntegrateForces` |
-| 2 | Broad Phase 更新 / 生成候选对 | ⬜ 预留 W6 | `UpdateBroadPhase` |
-| 3 | Narrow Phase → Contact/Manifold | ✅ W2 圆族 / W4 多边形 SAT+裁剪+解析路径（含跨帧冲量继承） | `UpdateContacts` |
+| 2 | Broad Phase 更新 / 生成候选对 | ✅ W6：proxy 同步 + `QueryPairs` + 顺序规范化 | `UpdateBroadPhase(dt)` |
+| 3 | Narrow Phase → Contact/Manifold | ✅ W2 圆族 / W4 多边形 SAT+裁剪+解析路径（含跨帧冲量继承）；W6 换候选对来源 | `UpdateContacts` |
 | 4 | 岛屿构建（DFS） | ⬜ 预留 W7 | `BuildIslands` |
 | 4b | 求解器准备（rA/rB、K_n/K_t、restitution/Baumgarte bias、warm-start 播种） | ✅ W5 | `PrepareConstraints(dt)` |
 | 5 | Warm Start | ✅ W5（施加继承冲量一次） | `WarmStart` |
 | 6 | 速度迭代（Sequential Impulse：法向 + 摩擦锥） | ✅ W5 | `SolveVelocityConstraints` |
 | 7 | 积分速度 → 位置（+ 单步钳制） | ✅ 已实现 | `IntegratePositions` |
 | 8 | 位置迭代（split impulse 伪速度层） | ✅ W5（W2 位置推出已删除） | `SolvePositionConstraints(dt)` |
-| 9 | 同步 transform / AABB | ✅ W2：由形状算 AABB | `Synchronize` |
+| 9 | 同步 transform / AABB（tight + fat margin） | ✅ W2 + W6 fat AABB | `Synchronize` |
 | 10 | 休眠判定 | ⬜ 预留 W7 | `UpdateSleep` |
 | 11 | Debug 校验（NaN/Inf 扫描，含伪速度） | ✅ 已实现 | `Validate` |
 
@@ -208,9 +236,35 @@ Week 2 为了先跑通"球落在地面停住"实现了一个**故意错误**的�
    最后 `ClearPseudoVelocities`。**真实速度全程既不读也不写**——这是"不注入能量"的机制保证，
    单测用逐位比较验证。伪速度每步必须清零，否则会变成求解器看不见的"免费速度"。
 
+### 4.4 Week 6: Broad Phase（`BruteForce` + `SAP`）
+
+两个实现都满足 `Core/BroadPhaseInterface.h`（冻结接口）：`AddProxy(AABB)->id`、`RemoveProxy`、
+`UpdateAABB`、`QueryPairs(callback)`、`GetProxyCount`、`Name`。
+
+- **`BroadPhaseBruteForce`**（`src/Collision/BroadPhaseBruteForce.cpp`，参考基线）：
+  slot 数组 `vector<AABB>` + `vector<uint8_t> alive` + 空闲列表；`QueryPairs` 固定 `i < j` 双重循环 +
+  `AABB::Overlaps`。它是对照 oracle，也是小场景（N < ~30）更快的实现（数据见 README bench 表）。
+- **`BroadPhaseSAP`**（`src/Collision/BroadPhaseSAP.cpp`）：
+  - 端点表示：**单一** `vector<Endpoint{float value; int32_t proxyId; uint8_t isMin}>`，每个 proxy 两个端点
+    （min.x / max.x）。单数组是为了增量更新：一次交换只动 12 字节，value/id/flag 不会失配。
+  - 排序策略：`AddProxy` 尾部追加 + 脏标记，在下一个 `UpdateAABB` / `QueryPairs` / `ValidateInternalState`
+    观察点做一次 `std::sort`（首帧/场景加载的批量路径）；**稳态** `UpdateAABB` 对两个端点分别
+    bubble-left / bubble-right（插入排序思路，利用帧间相干性；swap 时同步维护 proxy 缓存的端点索引）。
+  - 扫描：按 proxy id 有序的 active 集合；遇到 MIN 端点时对 active 中每个 proxy 做**完整
+    `AABB::Overlaps`**（y 轴是第二层过滤，不做会向窄相灌假阳性），通过则回调；遇到 MAX 端点移出。
+    输出严格 `A < B`、每对一次、升序 `(a, b)`。
+  - 删除：`RemoveProxy` 用 erase + 尾部索引刷新（保持有序与缓存索引不变量；删除是 body 生命周期级操作，
+    不是热路径）；proxy id 走空闲列表复用。
+  - `ValidateInternalState()`：任意时刻可验（存活 proxy 数 == MIN 端点数 == MAX 端点数、端点数组按 value
+    有序、proxy 缓存索引与实际位置一致），测试每帧调用；为此排序用 `mutable` 懒执行。
+  - 规模上限：active 集合是有序 `std::vector`，>10k proxy 时应换固定容量位集 + 位扫描（注释已写）。
+
+World 侧见 §3.6：候选对按 body index 规范化（`i<j`、排序、去重）是"切宽相不改变物理结果"的前提，
+不是优化；宽相只决定"谁进窄相"，窄相与求解器完全不知道宽相的存在。
+
 ## 5. 已冻结的公共接口
 
-Week 4 之后**不应再改签名**的接口（改动会波及后续 4 周与 testbed）：
+Week 6 之后**不应再改签名**的接口（改动会波及后续 2 周与 testbed）：
 
 - `World` 的全部 public 方法（生命周期、状态访问器、形状池含 `CreatePolygonShape`/`CreateBoxShape`、
   接触列表、`Step`、`SetGravity`、`SetSolverSettings`、`SetBroadPhase`、统计、`CheckSane`、`Clear`）。
@@ -219,8 +273,9 @@ Week 4 之后**不应再改签名**的接口（改动会波及后续 4 周与 te
   `CollideCircles` / `CollideCircleAndPlane` / `CollidePlaneAndCircle` / `CollideCircleAndPolygon` /
   `CollidePolygonAndCircle` / `CollidePolygonAndPlane` / `CollidePlaneAndPolygon` / `FlipManifold`。
 - `SAT` / `FindMaxSeparation` / `CollidePolygons` / `SATCache` / `ClipSegmentToLine`。
-- `IBroadPhase`、`ContactID`、`Manifold`、`ContactPoint`、`Contact`（字段可追加，
-  但既有字段语义不变）。
+- `IBroadPhase`（冻结，W6 未改一行）、`BroadPhaseBruteForce`、`BroadPhaseSAP`（W6 新增；公开 API =
+  `IBroadPhase` 方法 + `ValidateInternalState`，`Name()` 分别返回 "BruteForce"/"SAP"）、
+  `ContactID`、`Manifold`、`ContactPoint`、`Contact`（字段可追加，但既有字段语义不变）。
 - `Solver/ContactSolver.h` 的 `ContactSolver` 接口与 `ContactConstraintPoint` 字段
   （Week 5 已**追加** `tangent`/`tangentMass`/`accumulatedTangentImpulse` 与
   `WarmStart`/`SolvePosition`/`ClearPseudoVelocities`/`ComputeEffectiveTangentMass`/
@@ -240,8 +295,12 @@ Week 4 之后**不应再改签名**的接口（改动会波及后续 4 周与 te
 2. 迭代/求解顺序由 `std::vector` 下标决定；不使用 `unordered_map` 的遍历顺序。
 3. 不依赖浮点环境（未开 `-ffast-math`）。
 4. 场景生成使用带种子的 `std::mt19937`，只出现在场景构造，不进物理计算。
-5. `MathUtils` 提供 FNV-1a（float 位模式 + 量化弱 hash），为 Week 6-7 的 headless 回归
-   奠基（同平台逐位一致；跨平台用弱 hash / 阈值断言）。
+5. `MathUtils` 提供 FNV-1a（float 位模式 + 量化弱 hash）；**W6 起** `tests/regression` 用
+   量化弱 hash（quantum 1e-5）作为 golden 判定值，exact 位 hash 只作信息打印：
+   同平台逐位一致，跨编译器/平台靠量化容差可移植。
+6. **W6 起**：宽相候选对必须规范化为 `(i<j, sorted, deduped)` 的 body-index 对再进窄相，
+   因为接触列表顺序决定 PGS 求解顺序；三路（无宽相/BruteForce/SAP）逐帧逐位一致的验收
+   就是这条规则的证据。
 
 ## 7. 性能剖析钩子（预留 W6-W8）
 
@@ -255,11 +314,13 @@ Week 4 之后**不应再改签名**的接口（改动会波及后续 4 周与 te
 
 | 层 | 内容 | 位置 |
 | --- | --- | --- |
-| L1 单测 | 数学库、形状质量/AABB（圆/平面/多边形）、解析碰撞（圆族/圆-多边形/多边形-平面）、SAT+裁剪（位姿矩阵/ContactID 稳定性/cache）、求解器数学（`K_n`/`K_t`/冲量响应/摩擦锥/摩擦角扫描/warm start 播种/split impulse 位置层）、IDPool、accumulator、预留接口编译 | `tests/unit/` |
-| L2 组件 | 完整 Step 场景断言（坠落/钳制/销毁/形状附着/接触持久化/动量守恒/反弹高度/多边形叠放/确定性/**10 方块 10 s 里程碑/warmFactor 对比/split impulse 能量对比**） | `tests/unit/test_world_*.cpp` |
-| L3 回归 | 预留（`tests/regression/`，W6-W7） | — |
+| L1 单测 | 数学库、形状质量/AABB（圆/平面/多边形）、解析碰撞（圆族/圆-多边形/多边形-平面）、SAT+裁剪（位姿矩阵/ContactID 稳定性/cache）、求解器数学（`K_n`/`K_t`/冲量响应/摩擦锥/摩擦角扫描/warm start 播种/split impulse 位置层）、**宽相（BruteForce 参考/随机 AABB/SAP 与 BruteForce 1000 帧逐帧一致/端点不变量）**、IDPool、accumulator、预留接口编译 | `tests/unit/` |
+| L2 组件 | 完整 Step 场景断言（坠落/钳制/销毁/形状附着/接触持久化/动量守恒/反弹高度/多边形叠放/确定性/10 方块 10 s 里程碑/warmFactor 对比/split impulse 能量对比/**无宽相 vs BF vs SAP 三路逐位一致/proxy 生命周期/fat AABB 只加候选**） | `tests/unit/test_world_*.cpp` |
+| L3 回归 | **W6 起生效**：`physics2d_regression` 重放固定 600 步场景，量化弱 hash 对比 `golden/default_600.txt`；CTest `regression_default` + CI `regression` job | `tests/regression/` |
 
-当前规模：**301 个 ctest 用例**（release 302；其中 15 个 death test 在沙箱内自动 SKIP，CI 执行）。
-W5 新增 17 个 solver 单测 + 6 个 World 稳定性测试，并把 W4 的「10 盒必塌」基线改成稳定期望。
+当前规模：**321 个 ctest 用例**（debug/sanitize；release 322；其中 16 个 death test 在沙箱内自动 SKIP，
+CI 执行）。W5 新增 17 个 solver 单测 + 6 个 World 稳定性测试；W6 新增 11 个宽相单测 + 8 个 World 宽相
+测试 + 回归工具 1 个 CTest 用例，并把 bench 换成真实测量工具。
 
-`ctest --preset all` 通过 `gtest_discover_tests` 把每个 TEST 变成独立 ctest 用例。
+`ctest --preset all` 通过 `gtest_discover_tests` 把每个 TEST 变成独立 ctest 用例；回归工具是普通
+`add_test`（自带 CLI 与退出码语义 0/1/2）。

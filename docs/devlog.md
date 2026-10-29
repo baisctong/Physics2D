@@ -393,3 +393,129 @@
 5. 共享工作区并行开发时 build dir 可能链接到旧 obj（stale object）；最终结论一律以
    canonical clean build 为准。
 
+---
+
+## Week 6 · Broad Phase（BruteForce + SAP）与量化 + headless 回归
+
+**完成**
+- **`IBroadPhase` 两个实现**（R1）：
+  - `BroadPhaseBruteForce`：slot 数组 + 空闲列表 + 固定 `i<j` 双重循环，作为**对照 oracle** 与小场景实现；
+  - `BroadPhaseSAP`：**单一** `vector<Endpoint{value, proxyId, isMin}>`（每 proxy 两个端点）；`AddProxy`
+    尾部追加 + 脏标记，观察点一次 `std::sort`（首帧/批量加载）；稳态 `UpdateAABB` 对两个端点
+    bubble-left/right（帧间相干性，swap 同步缓存索引）；按 proxy id 有序 active 集合扫描 + 完整
+    `AABB::Overlaps`（y 轴二次过滤）；`RemoveProxy` erase+索引刷新；`ValidateInternalState` 任意时刻可验。
+- **World 宽相接线**（R2/R3）：`Body::proxyId` + `World::m_proxyToBody` 双向映射；`UpdateBroadPhase`
+  建/更/释放 proxy 并收集候选对，**规范化为 (i<j, sorted, deduped) 的 body-index 对**；
+  `UpdateContacts` 与 O(N²) fallback 共用 `CreateContactForPair`；`Synchronize` 的 AABB 变为
+  **tight + `kAabbMargin`(0.1m) 的 fat AABB**；`DestroyBody/SetBroadPhase/Clear` 正确释放 proxy。
+- **bench**（R13）：`bench/bench_broadphase.cpp` 完整 CLI（brute|sap|all、bodies 列表、frames、seed、
+  json、help），30×30m 随机盒场景，只计 `UpdateAABB + QueryPairs`（隔离宽相），前 100 帧预热丢弃，
+  median/mean + 环境打印。**真实数字进 README**。
+- **headless 回归**（R12）：`tests/regression/regression_main.cpp` + `physics2d_regression` target +
+  `golden/default_600.txt` + CTest `regression_default` + CI `regression` job；量化弱 hash（1e-5）判定，
+  exact 位 hash 仅信息；退出码 0/1/2。
+- **testbed**：`SceneBuilders.h` 共享场景构造；`Pyramid200`（完美金字塔，层数 4–24 可调）与
+  `StressBenchmark`（400 随机盒）两个新 demo；DebugUI **Broad phase 下拉（Auto/None/BruteForce/SAP）**
+  + installed name/proxies/candidate pairs；Status/Step ms；Camera `FocusOnWorld` 自适应取景；
+  smoke 行扩展 `broadphase/candidate_pairs/proxies` + 运动/高度聚合。
+- **Auto 宽相阈值**：`< 32 bodies → BruteForce，>= 32 → SAP`（常量注释 + README 注明来源 = 本机
+  Release bench 的实测交叉点 N≈25–32，不是抄的经验值）。
+
+**卡住的地方（现象 → 排查 → 根因 → 修复）**
+1. **中文 locale MSVC 的 `/showIncludes` 破坏了 Ninja 头文件依赖**
+   - 现象：只改 `.h` 后增量构建报 `ninja: no work to do`，旧 obj 被链接（W5 并行期的"假 stale"根因）。
+   - 排查：`ninja -t deps` 显示 `#deps 0`；`CMakeFiles/rules.ninja` 里 `msvc_deps_prefix = 注意: 包含文件:`
+     （CMake 以 UTF-8 写入），而 cl.exe 在 GBK 控制台输出同字符串的 GBK 字节 → Ninja 按字节比较匹配不上，
+     depfile 静默为空。试过 `VSLANG=1033` / `PreferredUILang=en-US` / `CMAKE_DEPENDS_USE_COMPILER=OFF`，
+     本机 VS 安装均无效。
+   - 处理：`scripts/build.ps1` 增加 `-Clean`（`cmake --build --clean-first`），并在脚本注释、
+     `docs/dev-setup.md §6`、testbed README 写明"改 header 后必须 `-Clean` 或 clean build"。
+     **周验收一律 clean build**，所以 W1-W6 的数据未受影响。
+2. **换宽相改变物理结果（顺序敏感）**
+   - 现象：首版接线后 SAP/BF 与 fallback 的 body 状态在若干步后出现末位差异。
+   - 根因：宽相发射顺序 → 接触列表顺序 → PGS（Gauss-Seidel）求解顺序 → 浮点结果。宽相实现不同 → 顺序不同。
+   - 修复：`UpdateBroadPhase` 把候选对规范化为 `(i<j, sorted, deduped)` 的 **body-index** 对（proxy id
+     顺序是实现细节，不能用）；`GetBroadPhasePairCount` 只暴露 count。用"反序 + 重复 + 逆序发射"的
+     noisy decorator 测试证明：缺 sort 物理发散、缺 dedupe 对数翻倍。
+3. **SAP 增量更新的三个坑**
+   - 批量插入：逐个 `AddProxy` 都排序是 O(N²logN)；改为"追加端点 + 脏标记，下一个观察点一次
+     `std::sort`"。为了让 `const ValidateInternalState()` 任意时刻为真，排序用 `mutable` 懒执行。
+   - 删除：`swap-pop` 会破坏"端点有序 + 缓存索引"不变量，改为 `erase` + 尾部索引刷新（删除是 body
+     生命周期级操作，不在热路径）。
+   - 惰性场景：静止 1000 帧端点必须零移动（有测试），否则说明冒泡条件写错。
+4. **Pyramid200 的"200"与稳定性冲突**
+   - 数据（600 步、默认 8/3 迭代，层数 → 底部最大穿透/顶层 y/最大倾斜）：20 层 210 盒 → 100.5mm /
+     19.057m (生成 19.5) / 6.02°，仍在蠕变；18 层 171 盒 → 60.3mm / 17.229m / 2.76°；**16 层 136 盒 →
+     29.7mm / 15.341m / 1.36°（0.06 m/s，基本静止）**；14 层 → 21.4mm。
+   - 根因：金字塔底部要扛 16-20 个盒的载荷，8 次速度迭代的传播预算 + 位置层 slop 带会让底部持续下沉——
+     这是**载荷/迭代预算**属性，不是宽相或求解器 bug（切 BF/None 物理输出完全相同）。
+   - 处理：demo 名沿用设计文档 `Pyramid200`，默认 **16 层 = 136 盒**（面板 4–24 层可调，README 附
+     稳定性-层数表）；注释/README 写清"设计文档的字面 200 盒 ≈ 20 层 210 盒，8 迭代下会下沉 0.44m，
+     可调出复现"。不调迭代数掩盖。
+5. **大场景取景**：19m 高金字塔/400 盒场超出默认视野（Camera 只有 Reset/输入回调）。新增
+   `Camera::FocusOnWorld(AABB)`：只在 Setup/Reset/切换 demo 时调用一次（不跟用户输入打架），
+   统计时跳过 Plane（无限半空间），zoom 钳 [0.2, 3.0]。
+6. **fat AABB 语义变化的外溢**：`Body::aabb` 从 tight 变成 fat 后，`AttachShape` 之后到下一次
+   `Synchronize` 之间仍是 tight；测试改为"包含 tight 且各边外扩 margin"的契约，并加"margin 只加候选
+   不加接触"的专项（0.15m 间隙圆对：候选 1 / 接触 0）——没有靠放宽断言过测试。
+7. **冷热拆分（R15）第三次顺延**：W6 本身已改 hot block（`proxyId` + fat `aabb` 语义），同一批 213 个
+   热字段访问点一周内改两次会让回归定位成本翻倍。W7（岛屿周，本来就要碰 body 存储）执行；偏差已登记。
+
+**数据（测量条件：Windows 11 22631 / i7-12650H / MSVC 19.44 / CMake 3.31.12 / Ninja 1.12.1）**
+- **宽相正确性**：
+  - SAP vs BruteForce：10 组随机场景（N=50/200/500）× 1000 帧 = **10,000 帧逐帧配对集合完全一致，
+    677,584 对比较 0 mismatch**、0 canonical 违规、0 `ValidateInternalState` 失败；600 次任意增删移动、
+    64×1000 惰性场景同样 0 失败。
+  - World 三路等价性：同一场景（地面 + 10 盒塔 + 3 圆 + 1 落盒，15 bodies）**无宽相 / BruteForce / SAP
+    300 步逐帧 545 floats 逐位一致**（body transform/真实+伪速度/力 + 完整 contact 列表含累计冲量），
+    first mismatch = -1；运行中切换 none→BF→SAP→BF→none 与从未装宽相的参照 World 150 步逐位一致。
+  - 候选对与 fat-AABB 暴力参考对数 **容差 0** 相等。
+  - testbed smoke A/B：BoxStack/Pyramid200/StressBenchmark 三场景用 `--broadphase none|bf|sap` 各 300 步，
+    body/contact 输出行 **SHA-256 完全相同**（仅候选对数不同）。
+- **bench 真实数字**（Release / seed 42 / 1000 帧测 + 前 100 丢弃 / median）：
+
+  | Bodies | BruteForce ms/帧 | SAP ms/帧 | 加速比 | 候选对/帧 | 真实重叠/帧 |
+  | ---: | ---: | ---: | ---: | ---: | ---: |
+  | 50 | 0.0033 | 0.0015 | 2.20x | 3.4 | 1.8 |
+  | 200 | 0.0838 | 0.0169 | 4.96x | 55.3 | 31.3 |
+  | 500 | 0.5399 | 0.0916 | 5.89x | 354.3 | 202.5 |
+  | 2000 | 9.0985 | 1.1656 | 7.81x | 5670.6 | 3206.6 |
+
+  小 N 反转（SAP 更慢）：N=5 0.00x、10 0.50x、20 0.80x、50 2.12x → **交叉点 N≈25–32**，
+  testbed Auto 阈值取 32；`true overlaps` 口径 = tight AABB 精确重叠（与候选对的差 = fat margin 的假阳性）。
+- **回归**：`tower30+circles20` 600 步，弱 hash **`588d30e70f9b4ddd`**（quantum 1e-5）、
+  exact `f4390ef86c075a04`；bodies 51 / contacts 83；CLI 退出码 0/1/2 实测正确；CTest 0.3s。
+- **测试与三 preset**：debug/sanitize **321 个 ctest 用例**（305 gtest passed + 15 sandbox death-test skip
+  + 1 `regression_default`）、release **322**；项目代码 **0 warning**；
+  clean 配置+构建+ctest：debug **42.5s** / release **47.1s** / sanitize(ASan) **66.1s**。
+  测试 exe 复制到工作区外运行 → **320/320 gtest 全过**（15 个 death test 真正执行）。
+- **testbed smoke（canonical debug build，300 步）**：
+  FallingBall `bodies=2 contacts=1 max_pen=5.000mm bay=BruteForce avg=0.98ms`；
+  SphereStack `4/3/3.063mm/BruteForce/1.07ms`；
+  BoxStack `11/10/20点/3.763mm/BruteForce/1.20ms`；
+  FrictionRamp `2/1/2.686mm/BruteForce/1.03ms`；
+  Pyramid200 `137 bodies/324 contacts/41.863mm/顶层 15.284m/tilt 2.18°/SAP/候选对 496/6.89ms`（600 步：
+  29.666mm、基本静止）；
+  StressBenchmark `401 bodies/819 contacts/178.151mm（400 盒密堆载荷现象）/SAP/候选对 1687/13.72ms`。
+  Auto 宽相按 body 数选：小场景 BruteForce、大场景 SAP（smoke 行可见）。
+
+**下周（W7）**
+1. 岛屿构建：DFS（显式栈）分岛，static/kinematic 作边界；按岛求解（连续数组 cache 收益）；
+2. 休眠：`sleepTimer`、整岛原子睡眠/唤醒、sleep 岛跳过宽相/窄相/求解但保留 proxy；
+   多米诺连锁唤醒测试；
+3. **补做冷热拆分 `Body`→`BodySim`/`BodyState`**（W4→W5→W6→W7 登记），用 W6 的回归弱 hash 证明行为不变；
+4. demo：`Dominoes`/`IslandSleep500`（休眠前后 Step 耗时对比）；`GetIslandCount()`/`GetAwakeBodyCount()` 接真实值；
+5. 回归工具扩展多场景 golden（可选）；tag `v0.7-island-sleep`。
+
+**给未来的自己的提醒**
+1. **顺序就是物理**：任何改变"谁先被求解"的改动（宽相顺序、岛屿打包顺序、排序算法）都会改变末位结果；
+   W6 的规范化 pair 与 noisy decorator 测试就是模板。
+2. **本机增量构建不可信**（中文 MSVC depfile 为空）：改 header 后一律 `-Clean` 或 clean build；
+   周验收的 canonical clean build 是唯一可信基线。
+3. SAP 的不变量要能被 `ValidateInternalState()` 在**任意时刻**验证（含 AddProxy 之后），懒排序 + mutable
+   就是为此；测试每帧调用它比事后对账有效得多。
+4. 大场景 demo 的"稳定性"先量载荷分布：金字塔底部穿透是迭代预算问题，不是新 bug；数据写清楚，
+   不要用调迭代数掩盖。
+5. 宽相只决定"谁进窄相"；窄相/求解器不应知道宽相存在。切宽相物理不一致时先查顺序/去重，别改窄相。
+
+

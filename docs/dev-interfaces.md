@@ -38,21 +38,21 @@
 
 | # | 预留点 | 位置（当前状态） | 计划周次 | 需要做的事 | 验收标准 |
 | --- | --- | --- | --- | --- | --- |
-| R1 | 宽相抽象 | `Core/BroadPhaseInterface.h`：纯虚类 + `PairCallback` 已定义，无实现 | W6 | 新增 `Collision/BroadPhaseBruteForce.{h,cpp}`、`BroadPhaseSAP.{h,cpp}`；testbed 下拉框切换 | 两实现的配对集合与暴力参考完全一致（10 组随机场景 × 50/200/500 物体）；bench 出数字 |
-| R2 | 宽相接线 | `World::SetBroadPhase` / `GetBroadPhase` / `m_broadPhase` 已存在（默认 null）；`World::UpdateBroadPhase()` 为空 | W6 | 在 `UpdateBroadPhase` 里同步 `Body::aabb` → proxy，`QueryPairs` 结果交 R4 | 切宽相不改变物理结果（回归 hash 一致） |
-| R3 | AABB 同步 | `World::Synchronize()` 已实现（W2：由形状算 `Body::aabb`）；fat AABB margin 未做 | W6 | 加 margin 外推（`AABB::Extend`）；平面形状由宽相特判 | fat margin 可在 ImGui 调；高速物体不漏检 |
+| R1 | 宽相抽象 | **W6 已完成**：`Core/BroadPhaseInterface.h`（接口未改一行）+ `Collision/BroadPhaseBruteForce.{h,cpp}`（O(N²) 参考基线）+ `Collision/BroadPhaseSAP.{h,cpp}`（单 vector 端点数组 + 首帧 `std::sort` / 稳态冒泡增量排序 + 按 proxy id 有序活跃集合 + 完整 `AABB::Overlaps` 二次过滤；`ValidateInternalState()` 可验内部不变量） | — | 无（DynamicAABBTree 仍是可选扩展，不进当前 roadmap 周） | 10 组随机场景×1000 帧（N=50/200/500）：10,000 帧逐帧 SAP == BruteForce，677,584 对比较 0 mismatch；惰性场景端点零移动；Release bench N=50/200/500/2000 加速比 2.2x/5.0x/5.9x/7.6x |
+| R2 | 宽相接线 | **W6 已完成**：`World::UpdateBroadPhase` 由 `Body::aabb` 建/更/释放 proxy（`Body::proxyId` + World 的 `m_proxyToBody` 反向映射），`QueryPairs` 结果转成 `(i<j, sorted, deduped)` 的 body-index 候选对，`UpdateContacts` 与 O(N²) fallback 共用 `CreateContactForPair`；`DeliverBody/AttachShape/Clear/SetBroadPhase` 都正确释放 proxy；无宽相时保留 O(N²) fallback | — | 无 | 同一场景 无宽相/BruteForce/SAP 三路 300 步**逐帧 545 floats 逐位一致**（含接触列表与累计冲量）；运行中切换 none→BF→SAP→BF→none 与从未装宽相的参照 World 150 步逐位一致 |
+| R3 | AABB 同步 | **W6 已完成**：`World::Synchronize` 在 tight `ComputeShapeAABB` 基础上 `Extend(kAabbMargin=0.1m)`（fat AABB）；`AttachShape` 立即刷新 tight AABB；平面仍是 `kPlaneAabbExtent` 超大盒（margin 对 1e6 无影响）；proxy 每步刷新（不需要速度外推） | — | 无（massive scale / sleeping proxy 留 W7） | margin 只加候选不加接触（0.15m 间隙圆对：候选 1 / 接触 0）；box/circle 的 aabb 与 tight+margin 四边逐位相等 |
 | R4 | 形状系统 | **W2/W4 已实现**：`Core/Shape.h` + `Collision/{ShapeTypes,CircleShape,PlaneShape,PolygonShape}.h`、World 形状池、`CreateCircleShape`/`CreatePlaneShape`/`CreatePolygonShape`/`CreateBoxShape`/`AttachShape` | — | 无（多边形已接入质量/AABB/窄相） | P04 全部单测；既有圆/平面测试不回归 |
 | R5 | 窄相数据 | **W2/W4 已实现**：圆族解析 + `CollideCircleAndPolygon`/`CollidePolygonAndCircle`/`CollidePolygonAndPlane`/`CollidePlaneAndPolygon` + `SAT`/`Clipping`/`CollidePolygons`/`FindMaxSeparation`/`ClipSegmentToLine`/`SATCache` | — | 无（SAT 路线完成；以后只有 DynamicAABBTree / 关节等扩展） | 9 种位姿、面-面 2 点/顶点-面 1 点、交换 A/B 法线反向 + Key 集合同、旋转 100 帧 Key 稳定 |
 | R6 | Contact 持久化 | **W2 已实现 + W5 接入求解器**：`World::UpdateContacts` 按 body 对 + `ContactID::Key()` 继承每点累计冲量（`m_previousContacts`），`isPersistent` 就位；W5 的 `Prepare` 用它播种 warm start（`isPersistent=false` 的点从精确 0 开始） | — | 无。匹配-继承逻辑保持 World 内部私有函数（`MatchAndInheritImpulses`），契约通过 `GetContacts()` 公开视图测试；不新增公共 API | 缓慢旋转 100 帧同一接触 Key 不变（W4 D5）；`isPersistent` 语义 = 全部新点都匹配到前帧点 |
-| R7 | 窄相阶段 | **W2 已实现**：`World::UpdateContacts()` = O(N²) 对枚举 + AABB 过滤 + 按形状类型分派 | W6 | 把对枚举换成 `IBroadPhase::QueryPairs`；窄相函数表（3×3 分派）随 Polygon 一起抽 | 与宽相配对数量一致；无 NaN；切宽相行为不变（回归 hash） |
+| R7 | 窄相阶段 | **W2 已实现 + W6 换源**：`World::UpdateContacts()` 的候选对来源 = 已安装宽相的规范化 pair 列表；无宽相时退回 W2 的 O(N²) 枚举。两条路径共用 `World::CreateContactForPair`（同一窄相分派，不会漂移）；窄相函数表（3×3 分派）仍显式 switch（未抽函数指针表） | — | 无（函数指针表是可选优化） | 三路（无/BF/SAP）逐位一致；候选对与 fallback 接触列表一致 |
 | R8 | 求解器阶段 | **W3 法向 + W5 完整**：`Solver/ContactSolver.{h,cpp}`（Prepare/WarmStart/SolveVelocity）+ `ContactSolverPosition.cpp`（split impulse 位置层）；摩擦锥累计钳制、warm starting（完整继承，factor 只作实验旋钮）、restitution bias、Baumgarte 对比基线；`World::PrepareConstraints(dt)`/`WarmStart`/`SolvePositionConstraints(dt)` 已接线 | — | 无（无关节/无 block solver；W6 只动宽相，不碰求解器） | 10 方块堆叠 10 s 稳定（穿透 4.22 mm）、摩擦角 20 格扫描、`accN>=0` 1000 帧、1000 帧摩擦锥 0 violation、split impulse 真实速度逐位不变 |
 | R9 | 岛屿/休眠 | `World::BuildIslands()`、`UpdateSleep()` 为空；`Body::islandId`、`sleepTime`、`allowSleep`、`World::GetIslandCount()`、`GetAwakeBodyCount()` 已留 | W7 | `Solver/Island.{h,cpp}`、`Sleep`；整岛原子睡眠/唤醒 | 3 岛/合并岛测试；sleep 后状态逐位不变；多米诺连锁唤醒 |
 | R10 | 接触/岛统计 | `World::GetContactCount()` **W2 已接真实计数**；`GetShapeCount()` 已加；`GetIslandCount()` 仍返回 0（W7） | W7 | 岛屿统计接真实值；回归输出 awake 曲线 | ImGui 面板数字与实际一致 |
 | R11 | 性能剖析 | `Core/Profiler.h` 宏已定义（默认空）；CMake 选项 `PHYSICS2D_ENABLE_TRACY`/`PHYSICS2D_TRACY_ROOT` 已留 | W6/W8 | 打开 Tracy、在 8 个 Step 阶段与 SAP 排序/扫描埋点；`Plot` awake/contact 数 | Tracy 时间线与 README 数字对应 |
-| R12 | headless 回归 | `tests/regression/` 目录 + README 约定；`tests/CMakeLists.txt` 预留注释块；`MathUtils` FNV-1a/量化 hash 已实现 | W6-W7 | `regression_main.cpp` + `physics2d_regression` target + `golden/*.csv` + `scripts/compare_hash.py` | CI headless job 跑 10000 步 hash 对比；退出码 0/1/2/3/4 语义 |
-| R13 | 基准工具 | `bench/bench_broadphase.cpp` 占位 + `physics2d_bench` target 已存在（只依赖 core） | W6 | 参数化场景，输出 markdown/JSON 表格 | N=50/200/500/2000 实测数字进 README |
-| R14 | Demo 扩展 | `testbed/Demo.h` 基类 + demo 注册表；`testbed/demos/` 已接入 CMake glob | W4-W7 | 按 P15 加 BoxStack/Pyramid200/FrictionRamp/Dominoes/IslandSleep500/StressBenchmark 等 | ImGui 下拉可切换；headless 与 testbed 共用场景生成（`testbed/SceneBuilders.h`，W6 再抽） |
-| R15 | 冷热拆分 | `Body` 内已分「冷/热」注释区；W5 只**追加**了伪速度字段（split impulse 需要），未拆并行数组 | **W6**（W4→W5→W6 二次顺延，见第 5 节偏差登记） | 拆 `BodySim`/`BodyState` 并行数组（设计文档 3.3 的"重构亮点"）；行为 hash 不变 | 全部测试通过、行为 hash 不变 |
+| R12 | headless 回归 | **W6 骨架已完成**：`tests/regression/regression_main.cpp` + `physics2d_regression` target（只 link core）+ `tests/regression/golden/default_600.txt` + CTest `regression_default` + CI `regression` job；hash = FNV-1a **量化弱 hash**（quantum 1e-5，跨编译器/平台可移植）作为判定值，exact float-bit hash 仅信息打印；退出码 0 匹配 / 1 不匹配 / 2 用法或 IO 错误 | W7（可选增强） | `--frames` 模板化多场景 golden（W7 的 Pyramid200/休眠场景）；`scripts/compare_hash.py`（当前不需要，C++ 单文件更简单） | `regression_default` 在 debug/release/sanitize 三 preset 的 ctest 全绿；CI headless job 跑同一命令 |
+| R13 | 基准工具 | **W6 已完成**：`bench/bench_broadphase.cpp` 完整 CLI（`--broadphase brute|sap|all --bodies 50,200,500,2000 --frames --seed --json --help`）；30×30m 随机盒场景、只计 UpdateAABB+QueryPairs、前 100 帧预热、median/mean、markdown + JSON、打印环境 | — | 无（Tracy 接入在 W6-8 剩余项） | Release 实测表格进 README（N=50/200/500/2000：2.20x/4.99x/5.91x/7.64x）；小 N 交叉 N≈25–32 |
+| R14 | Demo 扩展 | **W4-W6 已完成**：`testbed/Demo.h` 基类 + demo 注册表；6 个 demo（FallingBall/SphereStack/BoxStack/FrictionRamp/**Pyramid200**/**StressBenchmark**）；`testbed/SceneBuilders.h` 抽共享场景构造；Camera 增加聚焦世界 AABB 的自适应取景 | W7 | 剩余 demo（Dominoes/IslandSleep500）与休眠可视化 | ImGui 下拉可切换；headless smoke 可跑；宽相切换物理结果不变（core-dev 的 World 级测试兜底） |
+| R15 | 冷热拆分 | `Body` 内已分「冷/热」注释区；W5 追加伪速度字段、W6 追加 `proxyId`（hot block 仍单调增长） | **W7**（W4→W5→W6→W7 三次顺延，见第 5 节偏差登记） | 拆 `BodySim`/`BodyState` 并行数组（设计文档 3.3 的"重构亮点"）；行为 hash 不变 | 全部测试通过、回归 hash 不变 |
 | R16 | ContactID 对称性 | **W4 已实现**：`Key()` 不再包含 `flip` 位（flip 是朝向元数据），同一物理接触 A/B 交换后 Key 不变；SAT 的 reference/incident 归属与 flip 位按此约定填写；World 的持久化匹配按 Key 工作 | — | 无 | 交换 A/B 单测 Key 集合相同；旋转 100 帧 Key 只在特征切换帧变化 |
 | R17 | 时间步/插值 | `StepAccumulator` 已实现 + `GetAlpha()` | W7 | 渲染插值（可选） | 视觉顺滑，不影响物理确定性 |
 | R18 | 求解器参数暴露 | `SolverSettings` 全部字段 + `World::SetSolverSettings` 已实现；**W5 完成 DebugUI 实时面板**（迭代数/warmFactor/useWarmStarting/useSplitImpulse/β/slop/gravity/linearSlop/maxLinearCorrection/useSatCache）+ Contacts 调试面板 + 状态面板（Step 耗时） | — | 无 | 拖滑条不崩、无需重启；10 盒掉到 3 迭代会明显塌、8 迭代稳定（肉眼可见） |
@@ -83,7 +83,7 @@
 | W3 | P08 | ✅ **已完成**：`Solver/ContactSolver.{h,cpp}`（法向 SI + restitution bias）、World 的 `PrepareConstraints`/`SolveVelocityConstraints` 接线、删除 W2 临时速度投影；Testbed SphereStack demo | `World::SolveVelocityConstraints`（法向部分） |
 | W4 | P04、P07 | ✅ **已完成**：`Collision/{PolygonShape,SAT,Clipping}.{h,cpp}`、`SATCache`、`CollideCircleAndPolygon`/`CollidePolygonAndPlane`（P06 剩余）、`ContactID` flip 不计入 Key、World 多边形 API/分派/cache 持久化、BoxStack demo | `World::UpdateContacts` 走 SAT；冷热拆分移到 W5（见偏差） |
 | W5 | P09、P10、P14 | ✅ **已完成**：`Solver/ContactSolver.cpp` 扩展（摩擦锥、warm start、Baumgarte 对比基线）、新增 `Solver/ContactSolverPosition.cpp`（split impulse 伪速度位置层）、`Body` 追加伪速度字段、`World` 接线与 `TEMPORARY` 位置推出删除、DebugUI Solver/Contacts/状态面板、FrictionRamp demo、W4 崩塌基线测试改稳定期望；`Body`→`BodySim`/`BodyState` 冷热拆分二次顺延到 W6（见偏差） | `World::WarmStart`、`World::SolvePositionConstraints(dt)`、`World::PrepareConstraints(dt)` |
-| W6 | P11、P12、D04 | `Collision/{BroadPhaseBruteForce,BroadPhaseSAP}`、`bench/bench_broadphase` 实现、`testbed/SceneBuilders.h` | `World::UpdateBroadPhase`、`World::Synchronize`；`m_broadPhase` 接线 |
+| W6 | P11、P12、D04 | ✅ **已完成**：`Collision/BroadPhaseBruteForce.{h,cpp}`（参考基线）、`Collision/BroadPhaseSAP.{h,cpp}`（端点数组 + 增量冒泡 + `ValidateInternalState`）、`bench/bench_broadphase.cpp`（完整 CLI + 真实数字）、`tests/regression/`（工具 + golden + CTest + CI job）、`testbed/SceneBuilders.h` + `Pyramid200`/`StressBenchmark` demo + 宽相下拉/候选对显示；`Body::proxyId`、`Settings::kAabbMargin`；`World` 宽相接线与 pair 规范化 | `World::UpdateBroadPhase`、`World::Synchronize`（fat AABB）、`World::CreateContactForPair`、`World::GetBroadPhasePairCount` |
 | W7 | P13、P15、P16 | `Solver/{Island,Sleep}`、8 个 demo、`tests/regression/regression_main.cpp` | `World::BuildIslands`、`World::UpdateSleep`；回归 target 加进 `tests/CMakeLists.txt` |
 | W8 | W01-W04、D03 | `docs/{architecture,math,profiling}.md` 升级、README 数字表、GIF | 无（文档与验收周） |
 
@@ -122,7 +122,19 @@
 | **W5**：P09 要求 `MatchAndInheritImpulses` 抽成独立可测函数 | 保持 `World.cpp` 内部私有函数，不新增公共 API；继承契约通过 `World::GetContacts()` 公开视图做端到端测试 | 该函数是 World 持久化策略的实现细节，公开它会冻结一个本可随 W6 宽相等调整的内部接口。测试覆盖等价（`isPersistent`、跨帧继承、Key 匹配、部分匹配） |
 | **W5**：P10 的"30 层堆叠 10 s 穿透 < slop" | 位置层压力测试用 **32 速度迭代**（站立窗口 5 s、最大穿透 4.12 mm < slop），并在测试注释/printf 中记录 8 迭代实测塌陷数据（maxPen 0.146 m、max|angle|=π） | 30:1 单列每帧要传递 30 层支撑，8 次 PGS 迭代的传播预算不足（W4 已验证 10 盒 8 迭代都站不住）。这是**速度迭代预算**限制，不是位置层缺陷：位置层验收看站立窗口内穿透 < slop。W5 里程碑明确是 10 盒 @8 迭代 |
 | **W5**：P09 的 `World::SetSolverParameters` | 未新增；`SolverSettings` + `SetSolverSettings` 已覆盖全部参数 | 同 R18：避免分叉配置入口 |
-| **W5**：`Body` 的 `pseudoLinearVelocity/pseudoAngularVelocity` | 追加在 `Body` 热数据区，未做热冷拆分 | 见 R15/W6 顺延；伪速度是纯热数据，拆分时随 `BodySim` 一起走 |
+| **W5**：`Body` 的 `pseudoLinearVelocity/pseudoAngularVelocity` | 追加在 `Body` 热数据区，未做热冷拆分 | 见 R15/W7 顺延；伪速度是纯热数据，拆分时随 `BodySim` 一起走 |
+| **W6**：`Body::aabb` 的语义 | 从 "tight AABB（形状 AABB）" 改为 **fat AABB = tight + `kAabbMargin`(0.1m)**；`AttachShape` 之后仍是 tight，直到下一次 `Synchronize` | 宽相需要 fat AABB 才能容忍一步滞后与亚毫米移动；O(N²) fallback 也用同一字段，保证两条路径候选对一致。所有测试改为"包含 tight + 外扩 margin"契约，没有弱化：margin 只加候选、不加接触（有专项测试） |
+| **W6**：`Body::proxyId` 与 `World` 的 proxy↔body 映射 | `Body` 追加 `int32_t proxyId`（-1 = 无 proxy）；World 额外持有 `m_proxyToBody` 反向映射表 | 宽相接口只交换 proxy id，World 需要反查 body。没有把反向映射塞进 `IBroadPhase`，因为宽相接口是"只知道 AABB、不知道 body"的冻结契约（Section 4.5） |
+| **W6**：`UpdateContacts` 保留 O(N²) fallback | 安装宽相时用规范化 pair 列表，未安装宽相（`World` 默认）时仍走 W2 的 O(N²) 枚举；两条路径共用 `CreateContactForPair` | 默认 World 的行为与 W5 完全一致（301 个既有测试直接绿），切换宽相是**选择加入**；也让"宽相 bug"与"窄相 bug"可用三路对比隔离 |
+| **W6**：候选对顺序 | 宽相输出必须规范化为 `(i<j, sorted, deduped)` 的 body-index 对（sort + unique），**即使实现已经升序发射** | 接触列表顺序 → PGS 求解顺序 → 物理结果。没有这个规范化，"切宽相物理 hash 不变"就不成立。测试用一个"反序 + 重复 + 逆序发射"的 noisy decorator 证明规范化生效（缺 dedupe 对数翻倍、缺 sort 物理发散） |
+| **W6**：SAP 惰性排序 | `AddProxy` 尾部追加端点 + 脏标记，在下一个 `UpdateAABB`/`QueryPairs`/`ValidateInternalState` 观察点做一次 `std::sort`；稳态 `UpdateAABB` 才对两个端点做冒泡。为让 `const` 的 `ValidateInternalState` 任意时刻可验，排序用 `mutable` 成员 | 批量插入（场景加载）比逐个插入逐次排序快得多；稳态仍是增量冒泡（惰性场景端点零移动有测试）。`mutable` 是契约需要（任意时刻内部状态可验），已注释说明 |
+| **W6**：`RemoveProxy` 用 `erase` + 索引刷新而非 swap-pop | 端点数组保持有序不变量，删除频率低（body 生命周期级）；注释说明大 N 下的替代方案 | swap-pop 会破坏"端点有序 + 缓存索引"不变量，需要额外重建；删除不是热路径 |
+| **W6**：`World` 不暴露规范化 pair 列表（只有 count） | 只加 `GetBroadPhasePairCount()`；"严格 i<j/升序/无重复"由 count 容差 0 + 三路物理逐位一致 + noisy decorator 用例共同证明 | 公开 pair 列表等于把内部排序策略冻结成 API；测试用这三条证据已足够强 |
+| **W6**：bench 的"真实接触对"口径 | 用 **tight AABB 精确重叠**计数（不是窄相真实接触），两个实现同一口径；文档注明 | bench 只依赖 core 且刻意不跑物理；AABB 口径与窄相口径的差是固定的 fat-margin 假阳性成本，可解释、可复现。真实接触数由 testbed smoke/World 测试给出 |
+| **W6**：回归工具 golden 形态 | `golden/default_600.txt`（文本：弱 hash + frames + bodies + contacts），不是 P16 设想的 `golden/*.csv` + `scripts/compare_hash.py` | 单场景单 hash 用 C++ 单文件工具即可，跨语言脚本只增加维护面；量化弱 hash（1e-5）保证跨平台可移植。W7 若多场景再扩展模板 |
+| **W6**：回归工具 hash | 判定值用 FNV-1a **量化弱 hash**（quantum 1e-5）；exact float-bit hash 只打印 | 浮点逐位 hash 在跨编译器/平台（FMA 收缩、libm 差异）下不可靠；量化 1e-5 仍能捕获真实物理回归（穿透/位置漂移远大于 1e-5） |
+| **W6**：W6 无 `DetachShape` API | proxy 生命周期测试按"无 shape → 无 proxy；AttachShape 下一步 → 1；替换 shape → 1；DestroyBody → 释放；Clear → 0"口径；`DestroyShape` 未附着 shape 与 proxy 正交 | 冻结 API 优先：W6 不新增 detach；运行中 body 本就无法失去 shape（`DestroyShape` 对已附着 shape assert 拒绝），测试口径反映真实契约 |
+| **W6**：冷热拆分（R15）第 **三** 次顺延到 W7 | 只在 `Body` 追加了 `proxyId`（hot block），未拆并行数组 | W6 本身已经改动 hot block（`proxyId` + fat `aabb` 语义）；同一批 213 个热字段访问点如果一周内改两次，回归定位成本翻倍。W6 用"三路逐位一致 + 回归弱 hash"把行为不变钉死，W7（岛屿周，本来就要碰 body 存储）再做拆分并复用这套 hash 兜底 |
 
 ---
 
@@ -149,3 +161,18 @@
 - **restitution 阈值**：仅当初始接近速度 `−vn0 > restitutionThreshold` 时 `bias = e·vn0`，否则 0
   （静止堆叠不能被微小接近速度反复补弹）。
 - **`isPersistent=false` 的接触点从精确 0 开始**（warm start 只能继承同一物理特征上一帧的解）。
+
+### W6 起生效的宽相不变量（改宽相/World 接线前先核对）
+
+- **换宽相不得改物理**：候选对必须规范化为 `(i<j, sorted, deduped)` 的 body-index 对再进窄相；
+  验收 = 同一场景 无宽相/BruteForce/SAP 跑 N 步后 body 状态与接触列表**逐位一致**。
+- **宽相只知道 AABB**：`IBroadPhase` 接口不出现 Body/World 类型；proxy↔body 映射由 World 维护
+  （`Body::proxyId` + `World::m_proxyToBody`）。改接口属破坏性变更，必须走偏差登记。
+- **proxy 生命周期**：`UpdateBroadPhase` 是唯一建/更 proxy 的地方；`DestroyBody`、`SetBroadPhase`、
+  `Clear` 必须同步释放（否则 proxy 泄漏或 stale id 复用）；无 shape 的 body 没有 proxy。
+- **fat AABB 只加候选**：`Synchronize` 写 `tight + kAabbMargin`；`margin` 不得被用来"修"漏检
+  （漏检应先查 pair 规范化/时序，不是调大 margin）。
+- **`ValidateInternalState` 是契约**：SAP 测试任意时刻（增删/移动后）都必须为 true；
+  不允许出现"只在 QueryPairs 之后才一致"的实现。
+- **回归 hash 纪律**：`tests/regression/golden/default_600.txt` 的弱 hash 只在**有意的物理/场景变更**
+  时更新，且必须在 devlog 写 old/new 与原因；纯重构（宽相切换、BodySim 拆分、排序优化）hash 不变。

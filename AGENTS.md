@@ -14,10 +14,11 @@
 评价标准是「**链路完整 + 原理正确 + 有量化数据 + 代码可读可讲**」，不是功能多。
 设计文档原文在仓库外：`../2D物理引擎项目完整工作流与DeepSeek提示词库.md`（第 5 章按周执行，第 12 章提示词库）。
 
-**当前状态：Week 1-5 已完成**（数学库、Body/World 积分骨架、形状系统 + 圆族解析碰撞、
+**当前状态：Week 1-6 已完成**（数学库、Body/World 积分骨架、形状系统 + 圆族解析碰撞、
 **凸多边形 + SAT + 裁剪式 Manifold + SATCache**、**摩擦锥 + warm starting + split impulse 求解器**、
-**10 方块堆叠 10 秒稳定里程碑**、Testbed 四个 demo 与 Solver/Contact/Status 参数面板、
-测试/CI/构建体系；Week 6-8 的接口已预留）。
+**10 方块堆叠 10 秒稳定里程碑**、**BruteForce + SAP 可插拔宽相（2000 物体 7.8x 加速，切宽相物理逐位
+不变）**、**headless 确定性回归（量化 hash + golden + CI job）**、Testbed 6 个 demo 与 Solver/Contact/
+Broad phase/Status 面板、测试/CI/构建体系；Week 7-8 的接口已预留）。
 详见 `docs/ROADMAP.md` 与 `docs/devlog.md`。
 
 ---
@@ -136,11 +137,18 @@ ctest --preset vs2022-debug
   split impulse 伪速度层取代；`grep TEMPORARY` 现在只应命中文档/历史注释。
 - ~~无摩擦 / 无 warm start / 无 split impulse~~ → **W5 已完成**：摩擦锥（钳累计值）、warm starting
   （默认 factor 1.0，完整继承）、split impulse 位置层、Baumgarte 对比基线。
-- **30:1 单列高塔在默认 8 速度迭代下会塌**（迭代预算限制，10 盒才是 8 迭代验收场景）；
-  位置层验收场景必须写清迭代数，不要用位置层去硬顶速度迭代不足。
-- 宽相仍是 `UpdateContacts` 里的 O(N²) 枚举（W6 换 `IBroadPhase`）。
-- `BodySim`/`BodyState` 冷热拆分从 W4→W5→**W6** 二次顺延（见 dev-interfaces 偏差）；岛屿休眠（W7）、
-  Tracy 与 headless 回归（W6-8）。
+- ~~O(N²) 配对枚举~~ → **W6 已完成**：`IBroadPhase` + `BroadPhaseBruteForce` + `BroadPhaseSAP`，
+  fat AABB、proxy 生命周期、候选对规范化（切宽相物理逐位一致），bench 真实数字进 README。
+- ~~headless 回归占位~~ → **W6 已完成**：`physics2d_regression` + golden + CTest + CI job。
+- **30:1 单列高塔/金字塔底部在默认 8 速度迭代下会塌或超 10mm 穿透**（载荷/迭代预算限制，
+  10 盒才是 8 迭代验收场景）；验收场景必须写清迭代数，不要用位置层去硬顶速度迭代不足。
+- **`BodySim`/`BodyState` 冷热拆分从 W4→W5→W6→W7 三次顺延**（见 dev-interfaces 偏差）：
+  W7 岛屿周做，用 W6 的回归弱 hash 证明行为不变。
+- 岛屿/休眠未实现（`BuildIslands`/`UpdateSleep` 空、`GetIslandCount()`=0）→ **W7**。
+- Tracy 正式接入（R11）在 W7-W8；CI format/clang-tidy 在 W8。
+- **本机增量构建坑**：中文 locale MSVC 的 `/showIncludes` 不被 Ninja 识别 → 改 header 后必须
+  `build.ps1 -Clean` 或 clean build（`docs/dev-setup.md` §6、`scripts/build.ps1` 注释）。
+- `ContactSolver::SolvePosition` 每帧分配局部约束 vector（若 bench 显示热点再复用缓存，先测量）。
 
 ---
 
@@ -163,35 +171,43 @@ ctest --preset vs2022-debug
 
 ---
 
-## 5. 下一周（Week 6）从哪开始
+## 5. 下一周（Week 7）从哪开始
 
-1. 读 `docs/dev-interfaces.md` 第 2 节 R1/R2/R3/R13/R15 行与第 4 节 W6 行；读设计文档第 5 章
-   Week 6、第 6.2 节（SAP）、第 8 章（profiling/bench 输出格式）、提示词 P11（IBroadPhase +
-   BruteForce）、P12（SAP + 插入排序）、D04（性能测量纪律）。
-2. W6 的产出（详细验收见 `docs/ROADMAP.md` W6 表）：
-   - `Collision/BroadPhaseBruteForce.{h,cpp}`：`IBroadPhase` 的朴素基线（proxy 空闲列表、
-     `QueryPairs` 严格 A<B 且不重复）；
-   - `Collision/BroadPhaseSAP.{h,cpp}`：端点数组 `{float value; int32_t proxyId : 31; uint32_t isMin : 1}`
-     单一 vector，首帧 `std::sort`、之后 `UpdateAABB` 做冒泡式局部移动（帧间相干性），
-     扫描维护活跃集合 + y 轴二次过滤；
-   - `World::UpdateBroadPhase` 接线（`Synchronize` 已算 AABB，加 fat margin `AABB::Extend`；
-     平面由宽相特判或保留 `kPlaneAabbExtent` 策略）、`SetBroadPhase` 运行时切换；
-     `src/CMakeLists.txt` 登记新 .cpp；
-   - **确定性坑**：换宽相后配对枚举顺序可能改变 → 接触列表顺序改变 → 物理结果抖动。
-     World 必须把宽相回调的 pair 规范化（A<B + 按 index 排序）后再做窄相，才能满足
-     "切宽相物理结果 hash 不变"；
-   - `bench/bench_broadphase.cpp`：N∈{50,200,500,2000} × 1000 帧、两种实现各跑一遍，
-     输出 markdown 表格（真实数字，写清测量条件）；
-   - testbed：`SceneBuilders.h` 抽共享场景构造、`Pyramid200`/`StressBenchmark` demo、
-     宽相下拉框 + ImGui 实时耗时；
-   - `tests/regression/`：`regression_main.cpp` + golden hash + `scripts/compare_hash.py`（可与 W7 合并）；
-   - **补做冷热拆分 `Body`→`BodySim`/`BodyState`**（W4→W5→W6 二次顺延）：拆分后全部测试通过、
-     行为 hash 不变。
-3. 验收：BruteForce 配对集合与直接双重循环参考完全一致；SAP 与 BruteForce 在 10 组随机场景
-   （各 50–500 物体）配对集合完全一致；切宽相物理结果与 W5 一致（回归 hash）；
-   **既有 301 个测试不得弱化/删除**（物理行为除"更快的配对枚举"外不应变化）。
-4. 完成后更新 `docs/ROADMAP.md`、`docs/dev-interfaces.md`（R1/R2/R3/R13/R15）、`docs/devlog.md`、
-   `README.md` 性能表，跑三 preset，打 tag `v0.6-sap`。
+1. 读 `docs/dev-interfaces.md` 第 2 节 R9/R10/R14/R15/R17 行与第 4 节 W7 行；读设计文档第 5 章
+   Week 7、第 6.5 节（岛屿与休眠）、提示词 P13（岛屿/休眠）、P15（demo 集）、D05（调试手册）。
+2. W7 的产出（详细验收见 `docs/ROADMAP.md` W7 表）：
+   - **岛屿构建**（`World::BuildIslands`）：以 awake dynamic body 为起点做 DFS（**显式栈**，不用递归），
+     边是 Contact；static/kinematic 作遍历边界（约束跨越、但不入岛、状态不变）；同一岛 body 共享
+     `islandId`；岛的 body/contact 打包进连续临时数组；
+   - **按岛求解**：整岛拷贝进连续数组 → 求解 → 写回（注释说明 cache 收益）；与"不按岛"结果必须一致；
+   - **休眠**（`World::UpdateSleep`）：`sleepTime` 累计、`kSleepLinearTolerance`/`kSleepAngularTolerance`/
+     `kSleepTimeThreshold`；**整岛原子睡眠/唤醒**；sleep 岛跳过宽相/窄相/求解但在宽相保留 proxy；
+     唤醒条件：外力/冲量/SetTransform 作用于岛内 body，或 awake 物体 AABB 与 sleep 岛 proxy 重叠；
+     **多米诺连锁唤醒**测试；
+   - **补做冷热拆分 `Body`→`BodySim`/`BodyState`**（W4→W5→W6→W7 三次顺延，见偏差）：行为 hash 不变，
+     用 `physics2d_regression` 的量化弱 hash 兜底；
+   - demo：`Dominoes`、`IslandSleep500`（休眠前后 Step 耗时对比，进 README 性能表）；
+     `GetIslandCount()`/`GetAwakeBodyCount()` 接真实值；testbed 状态面板显示 islands/awake 曲线；
+   - 可选：R11 Tracy 接入（8 个 Step 阶段埋点）；Contact 调试面板完整版。
+3. 验收：3 岛/合并岛测试；static body 不入岛但约束跨越；sleep 后连续 100 步状态**逐位不变**；
+   对 sleep 岛施加冲量 → 整岛唤醒；**既有 321 个测试不得弱化/删除**；回归弱 hash 在纯重构（冷热拆分）
+   后必须不变（变了要解释）。
+4. 完成后更新 `docs/ROADMAP.md`、`docs/dev-interfaces.md`（R9/R10/R14/R15/R17）、`docs/devlog.md`、
+   `README.md` 性能表，跑三 preset，打 tag `v0.7-island-sleep`。
+
+### W6 的宽相约定（改宽相/World 接线前必读）
+
+- **换宽相不得改物理**：候选对必须规范化为 `(i<j, sorted, deduped)` 的 body-index 对再进窄相；
+  验收 = 同一场景 无宽相/BruteForce/SAP 跑 N 步 body 状态与接触列表**逐位一致**。
+- **宽相只知道 AABB**：`IBroadPhase` 不出现 Body/World 类型；proxy↔body 映射由 World 维护
+  （`Body::proxyId` + `World::m_proxyToBody`）。改接口属破坏性变更，先登记偏差。
+- **proxy 生命周期**：`UpdateBroadPhase` 是唯一建/更 proxy 的地方；`DestroyBody`/`SetBroadPhase`/`Clear`
+  必须同步释放；无 shape 的 body 没有 proxy。
+- **fat AABB 只加候选**：`Synchronize` 写 tight + `kAabbMargin`；漏检先查 pair 规范化/时序，不要调大 margin。
+- **`ValidateInternalState` 是契约**：SAP 任意时刻（增删/移动后）都必须 true。
+- **回归 hash 纪律**：`tests/regression/golden/default_600.txt` 只在**有意的物理/场景变更**时更新，
+  devlog 写 old/new 与原因；纯重构（宽相切换、BodySim 拆分、排序优化）hash 不变。
+- 不变量清单见 `docs/dev-interfaces.md` 第 6 节。
 
 ### W5 的求解器约定（改求解器前必读）
 

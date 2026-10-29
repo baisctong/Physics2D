@@ -124,7 +124,7 @@
   `kPositionCorrectionFactor` 移除、`Prepare` 追加 dt 参数、冷热拆分二次顺延到 W6
   （全部登记在 `docs/dev-interfaces.md` 第 5 节）。
 
-## Week 6 · Broad Phase 替换与量化
+## Week 6 · Broad Phase 替换与量化 ✅
 
 | 日 | 任务 | DoD |
 | --- | --- | --- |
@@ -136,7 +136,33 @@
 | D6 | Pyramid200/StressBenchmark | 切换宽相物理结果一致 |
 | D7 | headless 回归固化 + tag `v0.6-sap` | CI 新增 regression job |
 
-要填：R1/R2/R3/R13，R12 回归工具，**R15 冷热拆分（W4→W5→W6 二次顺延）**。
+要填：R1/R2/R3/R13，R12 回归工具，**R15 冷热拆分（W4→W5→W6→W7 三次顺延）**。
+
+**Week 6 验收结果（2026-10-29，tag `v0.6-sap`）**
+- **宽相双实现**：`BroadPhaseBruteForce`（O(N²) 参考基线）+ `BroadPhaseSAP`（单 vector 端点数组 +
+  首帧 `std::sort` / 稳态冒泡增量排序 + 有序 active 集合 + 完整 AABB 重叠 + `ValidateInternalState`）。
+  SAP vs BruteForce：10 组随机场景（N=50/200/500）× 1000 帧 = 10,000 帧逐帧配对集合完全一致，
+  677,584 对比较 0 mismatch。
+- **World 接线与等价性**：`Body::proxyId` + proxy↔body 映射、`UpdateBroadPhase` 候选对规范化为
+  (i<j, sorted, deduped)、`Synchronize` fat AABB（+0.1m）、`UpdateContacts` 与 O(N²) fallback 共用
+  `CreateContactForPair`。三路（无宽相 / BF / SAP）300 步**逐帧 545 floats 逐位一致**（含接触列表与
+  累计冲量）；运行中切换宽相 150 步与参照 World 逐位一致；testbed 三场景 `--broadphase none|bf|sap`
+  smoke 输出 SHA-256 完全相同。
+- **bench 真实数字**（Release / seed 42 / 1000 帧）：N=50/200/500/2000 → BruteForce 0.0033/0.0838/
+  0.5399/9.0985 ms/帧，SAP 0.0015/0.0169/0.0916/1.1656 ms/帧，**加速比 2.20x/4.96x/5.89x/7.81x**；
+  小 N 交叉 N≈25–32（SAP 在 N=20 是 0.80x）；testbed Auto 阈值取 32。
+- **headless 回归**：`physics2d_regression` 600 步弱 hash `588d30e70f9b4ddd`（quantum 1e-5）+
+  golden + CTest `regression_default` + CI `regression` job；退出码 0/1/2 实测正确。
+- **demo**：新增 Pyramid200（完美金字塔，默认 16 层=136 盒，4–24 可调；20 层=210 盒在 8 迭代下底部
+  下沉 0.44m 的实测数据已记录）与 StressBenchmark（400 随机盒）；DebugUI Broad phase 下拉
+  （Auto/None/BruteForce/SAP）+ candidate pairs/proxies 显示；Camera 自适应取景。
+- 测试 **321**（debug/sanitize；release 322）全绿；三 preset 全绿、0 警告；
+  clean build+ctest：debug 42.5s / release 47.1s / sanitize 66.1s；
+  测试 exe 复制到工作区外 320/320 全过（15 个 death test 真正执行）。
+- 偏差：`Body::aabb` 语义改为 fat AABB、`UpdateContacts` 保留 O(N²) fallback、SAP 懒批量排序 +
+  mutable、`RemoveProxy` 用 erase、回归用 txt golden + 量化弱 hash（非设计的 CSV+脚本）、
+  W6 无 `DetachShape`、bench "真实重叠"口径 = tight AABB、**冷热拆分三次顺延到 W7**
+  （全部登记在 `docs/dev-interfaces.md` 第 5 节）。
 
 ## Week 7 · 岛屿与休眠 + 打磨
 
@@ -150,7 +176,7 @@
 | D6 | 暂停/单步/慢放 | 逐帧观察 manifold |
 | D7 | Contact 调试面板完整版 + tag `v0.7-island-sleep` | — |
 
-要填：R9/R10/R14/R17。
+要填：R9/R10/R14/R17，**R15 冷热拆分（W4→W5→W6→W7 三次顺延）**，R11 Tracy（可选）。
 
 ## Week 8 · 文档、简历、面试准备
 
