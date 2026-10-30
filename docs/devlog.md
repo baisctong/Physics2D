@@ -646,5 +646,109 @@
    工作区外跑一次完整 gtest（含 death tests）是发现"被 sandbox SKIP 掩盖的契约回归"的唯一可靠方法。
 5. **默认值必须按 Release 测量定**：packed 求解在 Debug 下更快、Release 下反而慢 18%——只信 Release。
 
+## Week 8 · 文档、交付与 v1.0-release
+
+**完成**
+- **文档交付（6 个新文档 + 4 处升级）**：`docs/math.md`（9 节逐步推导 + 每节「面试可能怎么问」+
+  §10 边界契约表 + 常数附录，~1040 行）、`docs/profiling.md`（宽相/休眠/三求解模式/构建耗时/8 demo
+  smoke 全量实测表 + 测量纪律 + §1.5 Phase C canonical 复测，~500 行）、`docs/architecture.md` 升级
+  （§0 一张图总览、§3.7 数据所有权图、§4.6 Step 11 阶段时序图、§4.7 岛屿/休眠状态机，共 6 张 Mermaid）、
+  `docs/boundary-contracts.md`（三类契约 + 50 行边界场景表 + 13 条已知限制，73 个测试名逐条机械核对）、
+  `docs/demos.md`（8 demo/操作键/4 面板/录制命令/录屏坑）、`docs/resume-interview.md`（6 条简历 bullet +
+  25 问四段式 + 5 个专项深挖 + 20 分钟讲解脚本 + 数字速查）；README 重写为 v1.0 结构（GIF 墙/核心算法/
+  实测性能/已知限制/Roadmap/文档地图）+ 新增 `README.en.md` 英文版 + `docs/release-notes-v1.0.md`。
+- **GIF（W8 新增 testbed 帧捕获）**：`--capture-dir/--capture-every/--capture-start/--capture-hide-ui/
+  --capture-display`，在 world+ImGui 画完后、`glfwSwapBuffers` 前 `glReadPixels(GL_BACK, GL_RGB)` →
+  PPM(P6)（默认关闭零开销）；`scripts/record_gifs.ps1` 内嵌 Python+Pillow（本机无 ffmpeg）→ 5 张 720px、
+  12.5 fps GIF（dominoes/box_stack/sap_stress/island_sleep/contact_debug），总计 **1,692.6 KB**
+  （单张 ≤600KB、总预算 2.5MB 自动校验，PPM 中间文件编码后删除）。
+- **边界契约补强**：新增 **35 个测试用例** —— `tests/unit/test_boundary_solver.cpp` 23 个（10 常规 +
+  13 death：退化/溢出多边形、零/负/非有限密度、极大速度、1×100 m 薄条、1:1e6 mass ratio、非法
+  Step/Prepare/SolvePosition/NaN）与 `tests/unit/test_boundary_world.cpp` 12 个（debug 10 + release-only 2：
+  生命周期/ABA/stale handle/Clear、Step 非法输入、整岛唤醒与 proxy、休眠边界、宽相 churn 三路逐位一致、
+  islandId/sleepTime/零速度 invariant）。4 处代码硬化（全部只影响非法输入/Debug 校验）：
+  `PolygonShape::SetPolygon` 3 个溢出守卫（有限但溢出的坐标以前会生成零法线/inf 质心）、
+  `ContactSolver::Prepare` 非有限 manifold assert、`ContactSolver::SolvePosition` body index/pointCount
+  assert（此前是 UB）、`World::Step` Release 负迭代钳 0 + `CheckSane` 覆盖 W7 的 islandId/sleepTime/
+  休眠零速度。
+- **质量门（Phase C，canonical clean）**：三 preset 全绿 **debug 387 / release 390 / sanitize 387** 个
+  ctest（31 个 sandbox death-test SKIP），**0 项目警告**；clean 配置+构建+ctest **50.1 / 53.6 / 86.0 s**；
+  8 个 demo smoke 全部 exit 0；宽相 A/B 三场景（BoxStack/StressBenchmark/Dominoes）body+contact 输出
+  SHA-256 三路相同；回归弱 hash **`588d30e70f9b4ddd` 不变**、exit 0；工作区外 gtest **386/386 全过**
+  （31 个 death test 真正执行）；`scripts/format.ps1 -Check` 117 文件 OK；CI 新增 clang-format job。
+- **交付**：annotated tag **`v1.0-release`** + `docs/release-notes-v1.0.md`。
+
+**卡住的地方（现象 → 排查 → 根因 → 修复）**
+1. **多 agent 并行开发导致文档数字漂移（收尾最大成本）**
+   - 现象：同一指标在 README/AGENTS/architecture/HANDOFF/ROADMAP 出现不同值：bench 5 次中位 vs 3 次中位
+     （7.77x vs 7.70x）、休眠 1.70x vs 1.73x vs 1.74x、packed "0.82x/慢 18%" vs "0.87x/慢 15%"、
+     split impulse 深穿透被标成 "2 cm"（实际 1.139999 m/s 对应 0.10 m；2 cm 场景是 0.18 m/s）、
+     FallingBall smoke 5.000 vs 5.057、StressBenchmark max_pen 178.151 vs 170.739。
+   - 根因：① 各 agent 各自实测、机器上同时有编译/渲染，数字差 2–5% 属噪声但被当成"当前值"；
+     ② 历史周数字（devlog/ROADMAP 周记录）被复制进"当前状态"段落；③ 口径不同（testbed 混合 awake
+     窗口 vs 纯全醒/全睡；W7 的 packed 0.82x vs W8 复测 0.87x）。
+   - 修复：**单一事实来源 + 交付门复测**——`profiling.md` §1.5 记录 Phase C canonical 复测值，所有"当前"
+     数字以它为准；`boundary-contracts.md` §3 专门写"数字口径"（历史值只放历史列）；Lead 用 grep 对
+     README/docs 全量对账后统一替换。教训：多 agent 写文档前应先冻结"数字来源 + 当前/历史口径"。
+2. **GIF 录制没有 ffmpeg、也不能靠录屏**
+   - 现象：设计文档要求 4–5 张 GIF；本机无 ffmpeg，屏幕录制不可复现（窗口位置/帧率/人为操作都会变）。
+   - 方案：给 testbed 加确定性帧捕获（smoke 固定 1/60 s 步进），PPM 中间格式 + Pillow 编码；
+     `dominoes` 链长 20 m 会被浮动面板挡住两端 → 加 `--capture-hide-ui`；`sap_stress` 400 盒每帧
+     速度色带变化导致文件超预算 → settling 尾段（第 250 帧起）+ every=2 + 16 色，最终 578.8 KB。
+   - 验证：脚本自带单张/总量预算校验，并用 `read_image` 抽帧确认 UI 文字可读；5 张总计 1.69 MB。
+3. **边界测试抓到的真实缺口（都只加拒绝/校验，不改物理）**
+   - `SetPolygon` 接受"有限但溢出"的坐标（半宽 1e19：边长平方 = inf → `Normalized()` 返回 (0,0)
+     法线；shoe lace 和可溢出 → centroid = NaN）；修复 = 3 个 isfinite/IsValid 守卫 + 4 个新测试。
+   - 手搭 contact 的越界 body index 在位置层是 **UB**（MSVC 报 vector subscript out of range）；
+     修复 = `SolvePosition` 增加 index/pointCount/manifold assert（Release 仍安全）。
+   - `World::Step` 负迭代数在 Release 会把负数存进求解预算；修复 = NDEBUG 下钳 0（Debug assert 不变）。
+   - `CheckSane` 没覆盖 W7 新状态；修复 = islandId 范围 / sleepTime 有限非负 / 休眠动态体零速度检查。
+   - 纪律：这些改动后**回归 hash 必须不变**（实测不变），并且必须跑工作区外完整 gtest（sandbox 会
+     SKIP 掉最关键的 death tests——W8 的 31 个 death test 在工作区外全部真跑）。
+4. **发布周的可选优化取舍**
+   - 现象：文档完成后仍可做 block solver / Tracy / 渲染插值 / 冷热拆分。
+   - 决定：**全部不做**（v1.1 候选，按 block solver → Tracy → 插值 → 冷热拆分排序）。理由：block solver
+     会改变回归 hash，需要 golden old/new + 全量复测窗口，发布周做等于把"文档周"变成"求解器周"；
+     其余三项的收益都还没有测量证据（W7 的 packed 测量甚至否定了一个）。把 859 步入睡/薄片问题如实
+     写进 README 已知限制，比在发布周改物理更负责。
+
+**数据（canonical clean，Windows 11 22631 / i7-12650H / MSVC 19.44 / CMake 3.31.12 / Ninja 1.12.1）**
+- **构建+测试**：debug **50.1 s**（387 ctest）/ release **53.6 s**（390）/ sanitize(ASan) **86.0 s**
+  （387），全部 0 项目警告、31 个 sandbox death-test SKIP；工作区外 **386/386 gtest**（31 death 真跑）。
+- **宽相（Release，3 次中位）**：N=50/200/500/2000 = BF 0.0034/0.0839/0.5466/9.3061 ms，
+  SAP 0.0016/0.0173/0.0931/1.2084 ms → **2.12x / 4.88x / 5.92x / 7.70x**；小 N 5/10/20/50 =
+  0.00/0.50/1.00/2.00x，交叉点 **N≈24–26**（Auto 阈值保守 32）。
+- **休眠（Release）**：IslandSleep500 frame 105 全睡；testbed 端到端 **0.4634 → 0.2656 ms（1.74x）**；
+  gtest 直接计时 全醒 **0.5557 ms** / 全睡 **0.2772 ms**（纯口径 **≈2.00x**）；debug 同场景 1.68x；
+  10 盒塔 debug 3.30x（sleep step 859，历史同机）。
+- **三求解模式（Release，400 bodies/760 contacts 单岛、40 reps）**：8 迭代 W8 8 次中位
+  flat 1.860 / direct 1.908（0.97x）/ packed 2.137（**0.87x，比 flat 慢约 15%**）；Phase C 3 次复测
+  flat 1.750 / direct 1.856（0.94x）/ packed 2.442（噪声大但始终最慢）→ packed 默认关结论不变。
+- **8 demo smoke（canonical debug）**：FallingBall 5.057mm；SphereStack 3.063mm；BoxStack 3.893mm
+  （awake=10，塔站立）；FrictionRamp 2.686mm；Pyramid200 41.863mm；StressBenchmark 170.739mm；
+  Dominoes 20/20 唤醒无跳过；IslandSleep500 100 岛/500 睡/3.983mm。
+- **确定性/等价性**：回归弱 hash `588d30e70f9b4ddd`（exact `f4390ef86c075a04`）不变；
+  BoxStack/StressBenchmark/Dominoes 的 `none|bf|sap` body+contact SHA-256 三路相同；
+  三求解模式 21,760 float 0 差异；无宽相/BF/SAP 300 步 545 floats/步逐位一致。
+- **GIF**：5 张 720px 12.5fps，总计 1,692.6 KB（dominoes 116.8 / box_stack 435.9 / sap_stress 578.8 /
+  island_sleep 222.4 / contact_debug 338.7 KB），`scripts/record_gifs.ps1` 一条命令可复现。
+
+**下周（v1.1，按优先级）**
+1. **2 点接触 2×2 block solver**（最高优先级技术债）：消除薄片/2 点残余抖动 → 更快入睡；预计回归
+   hash 变化，需 golden old/new + devlog 解释。
+2. **Tracy 正式接入**（R11）：8 个 Step 阶段 + SAP 排序/扫描埋点与 `Plot(awake/contacts)`。
+3. **渲染插值**（R17，需要 Body 上一帧 transform 缓存）。
+4. **`BodySim`/`BodyState` 冷热拆分**（R15）：只有 Tracy 数据证明 body 布局是热点才做。
+5. 多场景回归 golden（R12 扩展：Pyramid200 / 休眠场景）、岛屿级并行、DynamicAABBTree（可选宽相第三实现）。
+
+**给未来的自己的提醒**
+1. **多 agent 并行写文档，先冻结"数字来源"**：谁测的、几轮中位、什么口径、是"当前"还是"历史"。
+   否则收尾会把时间全花在对账上；最终一律以 canonical clean 复测为准并用 grep 全量对账。
+2. **发布周的"只加校验"改动也要跑工作区外 death tests**：sandbox 自动 SKIP 会掩盖契约回归
+   （W7 就是这样抓到 static-static skip 回归的；W8 的 31 个 death test 全部真跑通过）。
+3. **不要让 GIF 逼你改物理/调参**：录制定时来自 smoke 固定步进，画面不理想就换 sample window
+   （start/every/crop/hide-ui），不改阈值、不改场景参数。
+4. **文档里的每条命令都要在提交前真跑**：format、三 preset、smoke、A/B、regression、death tests、
+   bench、GIF 重录——本次全部在 canonical 构建上跑过，数字才敢写。
 
 

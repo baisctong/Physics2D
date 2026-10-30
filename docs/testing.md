@@ -5,8 +5,8 @@
 > 本机**已装 PowerShell 7（`pwsh` 7.6.9），但构建一律走 `powershell`（PS 5.1）**：`scripts/build.ps1`
 > 在 PS7 下会因 `$isWindows` 只读自动变量报错（尚未适配）；本文命令均按 PS 5.1 验证。
 >
-> 当前基线（tag `v0.7-island-sleep`）：**debug 354 / release 355 / sanitize 354 个 ctest 全绿、
-> 0 警告**；8 个 demo smoke 全 exit 0；回归弱 hash `588d30e70f9b4ddd`。数字随机器/噪声略有浮动，
+> 当前基线（tag `v1.0-release`）：**debug/sanitize 387 / release 390 个 ctest 全绿、
+> 0 项目警告**（31 个 sandbox death test 自动 SKIP）；8 个 demo smoke 全 exit 0；回归弱 hash `588d30e70f9b4ddd`。数字随机器/噪声略有浮动，
 > 断言以"通过/exit 0/哈希相等"为准，具体毫秒数只作参考。
 
 ---
@@ -21,10 +21,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset de
 期望输出结尾：
 
 ```text
-100% tests passed, 0 tests failed out of 354
+100% tests passed, 0 tests failed out of 387
 ```
 
-（15 个 `Skipped` 是 sandbox 里无法运行的 death tests，属正常，见 §8。）
+（31 个 `Skipped` 是 sandbox 里无法运行的 death tests，属正常，见 §8。）
 
 想看画面：
 
@@ -38,7 +38,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset de
 
 | 层 | 测什么 | 怎么跑 | 耗时（本机参考） |
 | --- | --- | --- | --- |
-| L0 全量构建+单测 | 编译、0 警告、354 个 ctest | `scripts/build.ps1 -Preset debug -RunTests` | clean ≈60 s / 增量 ≈10 s |
+| L0 全量构建+单测 | 编译、0 警告、387 个 ctest | `scripts/build.ps1 -Preset debug -RunTests` | clean ≈60 s / 增量 ≈10 s |
 | L1 单个/一组 gtest | 某模块的精确行为 | `build\debug\tests\physics2d_tests.exe --gtest_filter=...` | 单测 <1 s |
 | L2 ctest 过滤 | 按名字跑一组（含 regression） | `ctest --test-dir build/debug -R "WorldSleepTest"` | 1-15 s |
 | L3 smoke（自动跑 demo） | 8 个场景的物理/渲染回归 | `physics2d_testbed.exe --demo X --smoke N --hidden` | 每 demo 1-10 s |
@@ -56,15 +56,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset de
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset debug -RunTests
 ```
 
-期望：`100% tests passed, 0 tests failed out of 354`，且构建输出里 **`warning C` 数量为 0**。
+期望：`100% tests passed, 0 tests failed out of 387`，且构建输出里 **`warning C` 数量为 0**。
 
 三 preset 完整验收（注意全是**干净构建**才有可比的耗时数字）：
 
 ```powershell
-# Release（355 个用例，含 1 个 release-only 契约测试）
+# Release（390 个用例，含 3 个 release-only 契约测试）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset release -RunTests
 
-# Sanitize（MSVC ASan；354 个用例；ASan 下跑测试需要脚本导入的 vcvars PATH）
+# Sanitize（MSVC ASan；387 个用例；ASan 下跑测试需要脚本导入的 vcvars PATH）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset sanitize -RunTests
 ```
 
@@ -72,7 +72,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset sa
 
 ```powershell
 Remove-Item -Recurse -Force build/debug, build/release, build/sanitize -ErrorAction SilentlyContinue
-# 然后按上面三条命令依次跑；本机参考：debug 55-65 s / release 55-65 s / sanitize 80-90 s
+# 然后按上面三条命令依次跑；本机 v1.0 canonical 参考（首次含 FetchContent 下载）：debug ≈50 s / release ≈54 s / sanitize ≈85 s
 ```
 
 > 想开一个不影响 canonical 的隔离目录：给命令加 `-BuildDir build/mycheck`（可再加 `-NoTestbed`
@@ -192,18 +192,18 @@ $tb = ".\build\debug\testbed\physics2d_testbed.exe"
 ```
 
 每个命令 = 隐藏窗口 + 固定 1/60 s 步进 N 帧 + 打印一行机器可读摘要，**exit 0 表示通过**。
-关键期望值（本机 debug，允许噪声）：
+关键期望值（v1.0 canonical debug，允许噪声；精确值见 `profiling.md` §6）：
 
 | Demo | 关键字段期望 |
 | --- | --- |
-| FallingBall 150 | `contacts=1`、`max_penetration_mm≈5.0`（kLinearSlop） |
-| SphereStack 300 | `bodies=4 contacts=3`、`max_pen≈3.1mm`、`sleeping=3` |
-| BoxStack 600 | `bodies=11 contacts=10 contact_points=20 max_pen≈3.9mm`、塔站立（`max_center_y≈9.478`） |
-| FrictionRamp 300 | `contacts=1`、方块静止（θ=15°, μ=0.30） |
+| FallingBall 150 | `contacts=1`、`max_penetration_mm=5.057`（≈kLinearSlop）、球心 y=0.495、已入睡 |
+| SphereStack 300 | `bodies=4 contacts=3`、`max_pen=3.063mm`、`sleeping=3` |
+| BoxStack 600 | `bodies=11 contacts=10 contact_points=20 max_pen=3.893mm`、塔站立（`max_center_y=9.478`、`max_speed=0.007`） |
+| FrictionRamp 300 | `contacts=1 max_pen=2.686mm`、方块静止（θ=15°, μ=0.30） |
 | Dominoes 600 | `woken_after_sleep=20/20 fallen=20/20 chain_reach=20 first_skipped=-1` |
-| IslandSleep500 600 | `islands=100 awake=0 sleeping=500 contacts=500`、`first_all_asleep_frame=105`、`speedup≈1.7x` |
-| Pyramid200 300 | `bodies=137 contacts=324 broadphase=SAP`、不塌 |
-| StressBenchmark 300 | `bodies=401 contacts≈820 broadphase=SAP`、物理与宽相选择无关 |
+| IslandSleep500 600 | `islands=100 awake=0 sleeping=500 contacts=500 max_pen=3.983mm`、`first_all_asleep_frame=105`、`speedup≈1.7x` |
+| Pyramid200 300 | `bodies=137 contacts=324 max_pen=41.863mm broadphase=SAP`、不塌 |
+| StressBenchmark 300 | `bodies=401 contacts=820 max_pen=170.739mm broadphase=SAP`、物理与宽相选择无关 |
 
 **宽相 A/B（验证"换宽相不改物理"）**——同一 demo 三种宽相跑，body/contact 输出行必须逐字节相同：
 
@@ -245,14 +245,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset re
 .\build\release\bench\physics2d_bench.exe --broadphase all --bodies 50,200 --frames 200 --seed 42 --json
 ```
 
-期望（本机 i7-12650H / MSVC 19.44，median；不同机器会浮动，看趋势与加速比）：
+期望（v1.0 canonical Release，3 次中位；本机 i7-12650H / MSVC 19.44；不同机器会浮动，看趋势与加速比）：
 
 | Bodies | BruteForce ms/帧 | SAP ms/帧 | 加速比 |
 | ---: | ---: | ---: | ---: |
-| 50 | ≈0.0033 | ≈0.0015 | ≈2.2x |
-| 200 | ≈0.084 | ≈0.017 | ≈5.0x |
-| 500 | ≈0.540 | ≈0.092 | ≈5.9x |
-| 2000 | ≈9.10 | ≈1.17 | ≈7.8x |
+| 50 | ≈0.0034 | ≈0.0016 | ≈2.12x |
+| 200 | ≈0.0839 | ≈0.0173 | ≈4.88x |
+| 500 | ≈0.5466 | ≈0.0931 | ≈5.92x |
+| 2000 | ≈9.3061 | ≈1.2084 | ≈7.70x |
 
 > 性能数字必须用 Release（Debug 数字无意义）。本机噪声约 ±2-5%，只比较量级/加速比。
 
@@ -281,7 +281,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset re
 ## 8. Death tests（契约测试）——为什么工作区里 SKIP、怎么真跑
 
 个别测试验证"非法输入必须 assert（debug）"，它们需要子进程写临时文件；本机 sandbox 不允许工作区
-内可执行文件这样做，所以 `ctest` 里 15 个 death test 会显示 `Skipped`，**这是正常的**。
+内可执行文件这样做，所以 `ctest` 里 31 个 death test 会显示 `Skipped`，**这是正常的**。
 
 想真正执行它们（验证契约没退化）：
 
@@ -290,12 +290,12 @@ $dir = Join-Path $env:LOCALAPPDATA 'Physics2D\testrun'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Copy-Item "build\debug\tests\physics2d_tests.exe" $dir -Force
 Push-Location $dir
-.\physics2d_tests.exe        # 期望：353 tests from 53 suites，PASSED 353
+.\physics2d_tests.exe        # 期望：386 tests from 60+ suites，PASSED 386
 Pop-Location
 ```
 
 > Week 7 就是靠这一步抓到一个"sleeping skip 把 static-static 非法输入也跳过、导致 assert 不再触发"
-> 的契约回归；**改动求解器/World 之后建议都跑一次**。期望 353/353（含 15 个 death test）。
+> 的契约回归；**改动求解器/World 之后建议都跑一次**。期望 386/386（含 31 个 death test）。
 
 ---
 
@@ -305,8 +305,8 @@ Pop-Location
 | --- | --- |
 | `pwsh : 无法将"pwsh"项识别为...` | 旧环境才会出现（本机现已装 PowerShell 7）；遇到时把 `pwsh` 换成 `powershell` 即可——本仓库命令统一用 `powershell`（`build.ps1` 在 PS7 下未适配） |
 | `ctest --preset debug` 报 no such test preset | ctest 的 preset 名不是 `debug`；用 `ctest --test-dir build/debug` 或直接 `build.ps1 -RunTests` |
-| ctest 显示 15 个 Skipped | 正常，sandbox death tests；见 §8 |
-| ctest 用例数 debug 354 / release 355 | 正常：release 多 1 个 release-only 契约测试 |
+| ctest 显示 31 个 Skipped | 正常，sandbox death tests；见 §8 |
+| ctest 用例数 debug 387 / release 390 | 正常：release 多 3 个 release-only 契约测试 |
 | 构建输出里 `warning C...` | 不应该有；任何项目代码警告都算回归（第三方依赖警告不算） |
 | 改了 header 但增量构建"没反应" / 出现 `HEAP CORRUPTION` | 本机中文 MSVC 的 `/showIncludes` 让 Ninja depfile 为空。`build.ps1` 已自动检测并强制 clean-first；也可手动 `-Clean` 或删 `build/<preset>` |
 | 增量构建很慢 / 每次都全量 | 说明 header 比 obj 新，触发了自动 clean-first（正确行为）；稳定后增量恢复 |
@@ -314,21 +314,53 @@ Pop-Location
 | testbed 窗口打不开 / `--smoke` exit 2 | 需要 OpenGL 3.3 上下文（远程桌面/无 GPU 环境不可用）；物理核心与单测不受影响 |
 | BoxStack smoke 300 步 `awake=10`，不是睡着吗？ | 正常：塔在 step 859 才满足 0.5 s 连续安静窗（残余抖动，见 README 已知限制）；600 步塔仍站立，900 步全睡 |
 | Pyramid200/StressBenchmark 穿透几十~一百多 mm | 载荷/迭代预算现象（不是 bug）：底面承受十几层重量、400 盒密堆；切宽相物理不变。金字塔默认 16 层就是按实测选的 |
-| 为什么 `Dominoes` 不用更薄的骨牌？ | 0.12 m 薄牌静止抖动 > 睡眠阈值 0.01 m/s，永远睡不着（已被实测记录）；0.30×1.0 m 是"可入睡"形状，正解是 W8 的 2×2 block solver |
+| 为什么 `Dominoes` 不用更薄的骨牌？ | 0.12 m 薄牌静止抖动 > 睡眠阈值 0.01 m/s，永远睡不着（已被实测记录）；0.30×1.0 m 是"可入睡"形状，正解是 v1.1 的 2×2 block solver（v1.0 未做，见 README 已知限制） |
 
 ---
 
 ## 10. 验收清单（手动跑完后逐项打勾）
 
-- [ ] `build.ps1 -Preset debug -RunTests` → **354/354 passed**，0 项目警告
-- [ ] `-Preset release -RunTests` → **355/355 passed**，0 警告
-- [ ] `-Preset sanitize -RunTests` → **354/354 passed**（ASan 无诊断）
+- [ ] `build.ps1 -Preset debug -RunTests` → **387/387 passed**，0 项目警告
+- [ ] `-Preset release -RunTests` → **390/390 passed**，0 警告
+- [ ] `-Preset sanitize -RunTests` → **387/387 passed**（ASan 无诊断）
 - [ ] 8 个 demo `--smoke --hidden` 全部 **exit 0**，关键字段符合 §5 表
 - [ ] `--broadphase none|bf|sap` 的 body/contact 输出 **SHA-256 相同**（§5 脚本）
 - [ ] `physics2d_regression --check` → **hash `588d30e70f9b4ddd`**、exit 0
-- [ ] 工作区外跑测试 exe → **353/353 gtest passed**（含 15 个 death test，§8）
+- [ ] 工作区外跑测试 exe → **386/386 gtest passed**（含 31 个 death test，§8）
 - [ ] 交互验收 §4 的 9 项（塔稳定/摩擦翻坡/多米诺连锁/休眠 1.7x/宽相切换/Contact 柱状条/单步/慢放/AABB）
+- [ ] `scripts/format.ps1 -Check` → OK（117 个 C++ 文件）
+- [ ] `scripts/record_gifs.ps1` → 5 个 GIF，单张 ≤600KB、总计 ≤2.5MB（§11）
 - [ ] （可选）Release bench 加速比趋势符合 §6 表
+
+---
+
+## 11. 录制 / 更新 README GIF（W8 新增）
+
+GIF 由 testbed 的**确定性帧捕获**生成（不是录屏）：`--smoke` 的固定 1/60 s 步进保证每次录制
+回放同一段物理；`--capture-dir DIR` 在 world + ImGui 都画完后、`glfwSwapBuffers` 前用
+`glReadPixels(GL_BACK)` 读回像素，写成 PPM，再由 `scripts/record_gifs.ps1` 内嵌的 Python+Pillow
+编码成 GIF（本机无 ffmpeg）。一条命令重录全部 5 张：
+
+```powershell
+# 先有 release（或 debug）testbed；Python 3 带 Pillow（DSH 环境可用捆绑 Python，-PythonExe 指定）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/record_gifs.ps1
+# 只重录其中几张 / 指定构建目录 / 指定 Python
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/record_gifs.ps1 -Only dominoes,island_sleep
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/record_gifs.ps1 -Testbed build/w8tbrel/testbed/physics2d_testbed.exe
+```
+
+捕获 CLI（`--capture-*` 只在 `--smoke` 下有效；默认关闭零开销）：
+
+```powershell
+.\build\release\testbed\physics2d_testbed.exe --demo BoxStack --smoke 900 --hidden `
+    --capture-dir build/capture/box_stack --capture-every 8 --capture-start 1
+# 另有 --capture-hide-ui（只录场景）与 --capture-display contacts/normals/aabb/axes/velocities=on|off
+```
+
+输出与预算：`docs/images/{dominoes,box_stack,sap_stress,island_sleep,contact_debug}.gif`，
+720px 宽、12.5 fps、每张 ≤600KB、总计 ≤2.5MB（脚本自动校验）；PPM 中间文件写在 gitignored 的
+`build/capture/` 并在编码后删除——**不要把 PPM/PNG/大文件提交进仓库**。改 testbed 渲染后重录，
+并用 `read_image` 或 Pillow 抽 1-2 帧确认画面/UI 可读。详见 [`docs/demos.md`](demos.md) §4。
 
 ---
 

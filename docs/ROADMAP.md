@@ -203,21 +203,55 @@
   休眠阈值不调大（sleep onset 859 步如实记录）、Dominoes 用 0.30×1.0 m 宽牌、R15 冷热拆分顺延到 W8
   （全部登记在 `docs/dev-interfaces.md` 第 5 节）。
 
-## Week 8 · 文档、简历、面试准备
+## Week 8 · 文档、简历、面试准备 ✅
 
-| 日 | 任务 | DoD |
-| --- | --- | --- |
-| D1 | 架构图升级 | 一张图讲清引擎 |
-| D2 | `docs/math.md` | 公式能手推 |
-| D3 | `docs/profiling.md` | 性能表 + 环境 |
-| D4 | README 完整版 | 陌生人 5 分钟能跑 |
-| D5 | 已知限制 + 边界测试 | 崩溃点都有 assert/文档 |
-| D6 | 简历 bullet + 面试演练 | 能闭卷讲 20 分钟 |
-| D7 | tag `v1.0-release` + Release | — |
+| 日 | 任务 | DoD | 状态 |
+| --- | --- | --- | --- |
+| D1 | 架构图升级 | 一张图讲清引擎 | ✅ |
+| D2 | `docs/math.md` | 公式能手推 | ✅ |
+| D3 | `docs/profiling.md` | 性能表 + 环境 | ✅ |
+| D4 | README 完整版 | 陌生人 5 分钟能跑 | ✅ |
+| D5 | 已知限制 + 边界测试 | 崩溃点都有 assert/文档 | ✅ |
+| D6 | 简历 bullet + 面试演练 | 能闭卷讲 20 分钟 | ✅ |
+| D7 | tag `v1.0-release` + Release | — | ✅ |
 
 要填：R11 Tracy 完整接入（如时间允许）、R15 冷热拆分（**只有拿到 profiling 数据证明 body 内存布局是热点才做**；
-W7 实测"岛内打包"在 400 体规模反而慢 18%，说明该规模下 body 数组本就 cache 友好）、
+W7 实测"岛内打包"在 400 体规模反而更慢，说明该规模下 body 数组本就 cache 友好）、
 2 点接触 2×2 block solver（消除薄片残余抖动 → 更快入睡，W7 卡点 3 的正解）、W01-W04 文档提示词。
+
+**Week 8 验收结果（2026-10-30，tag `v1.0-release`）**
+- **文档（全部落盘并交叉链接）**：`docs/math.md`（9 节逐步推导 + 每节面试追问 + §10 边界契约表，~1040 行）；
+  `docs/profiling.md`（宽相/休眠/三求解模式/构建耗时/8 demo smoke 全量实测 + 测量纪律 +
+  §1.5 Phase C canonical 复测，~500 行）；`docs/architecture.md` 升级（§0 一张图总览、§3.7 数据所有权图、
+  §4.6 Step 11 阶段时序图、§4.7 岛屿/休眠状态机，共 6 张 Mermaid）；`docs/boundary-contracts.md`
+  （三类契约 + 50 行边界场景表 + 13 条已知限制，73 个测试名逐条机械核对）；`docs/demos.md`（8 demo/操作键/
+  4 面板/GIF 录制）；`docs/resume-interview.md`（6 条简历 bullet + 25 问四段式 + 5 个专项深挖 + 20 分钟讲解
+  + 数字速查）；README 重写为 v1.0 结构 + `README.en.md` 英文版 + `docs/release-notes-v1.0.md`；
+  AGENTS/HANDOFF/ROADMAP/dev-interfaces/devlog/testing 全部更新到 v1.0。
+- **GIF**：testbed 新增确定性帧捕获（`--capture-dir/--capture-every/--capture-start/--capture-hide-ui/
+  --capture-display`，`glReadPixels(GL_BACK)` → PPM P6，默认关闭零开销）+ `scripts/record_gifs.ps1`
+  （内嵌 Python+Pillow，本机无 ffmpeg）→ **5 张 GIF**（dominoes/box_stack/sap_stress/island_sleep/
+  contact_debug，720px/12.5fps，总计 **1,692.6 KB**，单张 ≤600KB）。
+- **已知限制/边界测试（设计文档 10 章 DoD 全覆盖）**：新增 **35 个测试**（solver 23：退化/溢出多边形、
+  零/负/非有限密度、极大速度、1×100 m 薄条、1:1e6 mass ratio、非法 Step/Prepare/SolvePosition/NaN；
+  Core 12：生命周期/ABA/stale handle/Clear、Step 非法输入、整岛唤醒与 proxy、休眠边界、宽相 churn
+  三路逐位一致、islandId/sleepTime/零速度 invariant）；4 处代码硬化（PolygonShape 溢出守卫 ×3、
+  ContactSolver/SolvePosition assert、World Release 负迭代钳 0 + CheckSane 覆盖 W7 状态）——
+  只改非法输入行为/Debug 校验，**合法输入逐位不变**。
+- **测试/三 preset（canonical clean）**：debug **387** / release **390** / sanitize **387** 个 ctest
+  全绿、**0 项目警告**、31 个 sandbox death-test SKIP；clean 配置+构建+ctest
+  **50.1 s / 53.6 s / 86.0 s**；工作区外 gtest **386/386 全过**（31 个 death test 真正执行）。
+- **交付门证据**：8 个 demo smoke 全 exit 0（FallingBall 5.057mm、BoxStack 3.893mm、Pyramid200 41.863mm、
+  StressBenchmark 170.739mm、Dominoes 20/20、IslandSleep500 100 岛/500 睡 3.983mm）；宽相 A/B 三场景
+  body+contact SHA-256 三路相同；回归弱 hash **`588d30e70f9b4ddd` 不变**、exit 0；
+  `scripts/format.ps1 -Check` 117 文件 OK；CI 新增 clang-format job。
+- **性能（canonical Release）**：宽相 2000 体 **7.70x**（2.12x/4.88x/5.92x/7.70x）、小 N 交叉 N≈24–26；
+  休眠 IslandSleep500 端到端 **0.4634 → 0.2656 ms（1.74x）**、纯全醒/全睡 **≈2.00x**；
+  三求解模式 packed **0.87x（比 flat 慢约 15%）** 默认关闭；数字与口径全部见 `docs/profiling.md`。
+- **可选优化（未做，登记 v1.1）**：2 点接触 2×2 block solver（最高优先级技术债，会改回归 hash，需
+  golden old/new + 全量复测窗口）、Tracy 实接（R11）、渲染插值（R17）、BodySim/BodyState 冷热拆分（R15，
+  须先有 profiling 数据证明 body 布局是热点）。理由见 `docs/dev-interfaces.md` §5 W8 偏差行。
+
 
 ## 降级路径（时间不够时按序砍）
 

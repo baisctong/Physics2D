@@ -4,7 +4,7 @@
 > 本文件是"项目宪法 + 交接协议"，避免每个会话重新发明约定、把符号约定搞混。
 >
 > **换会话/换人接手时，先读 [`HANDOFF.md`](HANDOFF.md)**：一页纸交接（现状、验证基线、
-> 该做/不该做、Week 5 任务卡、环境坑、团队流程）。本文件负责长期规则，HANDOFF 负责当前状态。
+> 该做/不该做、v1.1 任务卡、环境坑、团队流程）。本文件负责长期规则，HANDOFF 负责当前状态。
 
 ---
 
@@ -14,12 +14,15 @@
 评价标准是「**链路完整 + 原理正确 + 有量化数据 + 代码可读可讲**」，不是功能多。
 设计文档原文在仓库外：`../2D物理引擎项目完整工作流与DeepSeek提示词库.md`（第 5 章按周执行，第 12 章提示词库）。
 
-**当前状态：Week 1-7 已完成**（数学库、Body/World 积分骨架、形状系统 + 圆族解析碰撞、
+**当前状态：Week 1-8 全部完成，tag `v1.0-release`**（数学库、Body/World 积分骨架、形状系统 + 圆族解析碰撞、
 **凸多边形 + SAT + 裁剪式 Manifold + SATCache**、**摩擦锥 + warm starting + split impulse 求解器**、
-**10 方块堆叠 10 秒稳定里程碑**、**BruteForce + SAP 可插拔宽相（2000 物体 7.8x）**、
-**岛屿分区 + 按岛求解（三模式逐位一致）+ 整岛原子休眠（500 物体休眠后 1.73x）**、
+**10 方块堆叠 10 秒稳定里程碑**、**BruteForce + SAP 可插拔宽相（2000 物体 7.70x）**、
+**岛屿分区 + 按岛求解（三模式逐位一致）+ 整岛原子休眠（500 物体休眠后 1.74x）**、
 **headless 确定性回归（量化 hash + golden + CI job）**、Testbed 8 个 demo 与完整调试面板；
-Week 8 为文档/交付周）。详见 `docs/ROADMAP.md` 与 `docs/devlog.md`。
+**W8 交付完整文档（math/profiling/architecture/boundary-contracts/demos/resume-interview）、
+README 中英双语、5 张 GIF、35 个边界测试、CI clang-format job**）。
+**v1.0 之后物理与公共 API 冻结**；下一轮 v1.1 见 `HANDOFF.md` §5（首位：2 点接触 2×2 block solver）。
+详见 `docs/ROADMAP.md` 与 `docs/devlog.md`。
 
 ---
 
@@ -140,14 +143,14 @@ ctest --preset vs2022-debug
 - ~~O(N²) 配对枚举 / headless 回归占位~~ → **W6 已完成**（SAP/BruteForce + regression 工具）。
 - ~~岛屿/休眠未实现~~ → **W7 已完成**：岛屿 DFS、三种按岛求解模式（默认 grouped-direct）、
   整岛原子休眠/唤醒、休眠岛跳过宽相 AABB 更新/窄相/求解、邻近唤醒、统计接入。
-- **2 点接触 2×2 block solver（W8 可选，最高优先技术债）**：逐点 PGS 对薄片/2 点接触的顺序偏差造成
+- **2 点接触 2×2 block solver（v1.1 最高优先技术债；W8 未做，理由见 devlog W8）**：逐点 PGS 对薄片/2 点接触的顺序偏差造成
   静止残余抖动尖峰（maxV 0.015–0.025 m/s > `kSleepLinearTolerance=0.01`），导致 10 盒塔 ~859 步才入睡、
   更薄形状几乎无法入睡。**不要靠调大休眠阈值掩盖**。
-- **`BodySim`/`BodyState` 冷热拆分（W4→W5→W6→W7→W8 顺延，W8 可选）**：W7 实测"岛内打包" Release
-  反而慢 18%（400 体 Body 数组 == ~80 KB，本就装得进 L2），说明该规模下 body 布局不是热点；正确顺序是
-  先 Tracy profiling 证明热点再做（纯重构，回归 hash 必须不变）。
-- **按岛 body 打包默认关闭**（`SolverSettings::packIslandBodies=false`）：保留 opt-in + 位级测试覆盖。
-- Tracy 正式接入（R11）在 W8；CI format/clang-tidy 在 W8。
+- **`BodySim`/`BodyState` 冷热拆分（W4→W8 连续顺延，v1.1 候选 R15）**：W7 实测"岛内打包" Release
+  反而更慢；W8 复测 packed 0.87x（400 体 Body 数组 ≈80 KB，本就装得进 L2），说明该规模下 body
+  布局不是热点；正确顺序是先 Tracy profiling 证明热点再做（纯重构，回归 hash 必须不变）。
+- **按岛 body 打包默认关闭**（`SolverSettings::packIslandBodies=false`）：W8 复测 0.87x（比 flat 慢约 15%），保留 opt-in + 位级测试覆盖。
+- Tracy 正式接入（R11）推迟到 v1.1；CI 已在 W8 加入 clang-format job（clang-tidy 仍是 v1.1 候选）。
 - **本机增量构建坑**：中文 locale MSVC 的 `/showIncludes` 不被 Ninja 识别 → 类布局混链会 HEAP CORRUPTION。
   `scripts/build.ps1` 已自动检测 header 比 obj 新并强制 `--clean-first`；canonical 周验收仍须 clean build。
 - `ContactSolver::SolvePosition` 每帧分配局部约束 vector（未证明是热点，先测量）。
@@ -159,7 +162,7 @@ ctest --preset vs2022-debug
 
 完成一个任务前必须全部通过：
 
-- [ ] `clang-format`（或保持与 `.clang-format` 一致的手工风格）
+- [ ] `powershell ... scripts/format.ps1 -Check` 通过（clang-format，117 个 C++ 文件；CI 有同名 job）
 - [ ] `scripts/build.ps1 -Preset debug` **零项目警告**（MSVC /W4）
 - [ ] `scripts/build.ps1 -Preset debug -RunTests` 全绿（新增测试覆盖新代码 + 边界）
 - [ ] `-Preset sanitize` + ctest 干净（至少每周一次；MSVC 为 ASan）
@@ -168,34 +171,37 @@ ctest --preset vs2022-debug
 - [ ] 没有渲染头文件进入 core（CI 分层 job 会抓）
 - [ ] `docs/devlog.md` 写 3 行说明（用自己的话）
 - [ ] commit message 用 Conventional Commits（`feat(solver): ...` / `fix(sat): ...` / `perf(broadphase): ...` / `test(...)`）
-- [ ] 周结束：打 tag（`v0.2-plane-contact`、`v0.3-impulse` …）、写周报、更新 README 性能表（如有新数字）
+- [ ] 涉及测试/契约时：新 death test 在工作区外真跑一次完整 gtest（sandbox 会 SKIP，见 docs/testing.md §8）
+- [ ] 涉及文档/数字时：性能数字以 `docs/profiling.md` 为准并标口径；历史值只留在 devlog/ROADMAP 周记录
+- [ ] 周/里程碑结束：打 tag、写周报、更新 README 性能表（如有新数字）；发布后用 Conventional Commits + annotated tag
 
 **修复循环上限 3 轮**：编译/测试错误改 3 轮还不绿 → 拆任务卡或人工读代码，禁止无限 AI 自循环。
 
 ---
 
-## 5. 下一周（Week 8：文档与交付周）从哪开始
+## 5. 下一轮（v1.1）从哪开始
 
-1. 读 `docs/dev-interfaces.md` 第 2 节剩余项（R11 Tracy、R15 冷热拆分可选、R17 插值可选）与第 4 节
-   W8 行；读设计文档第 8 章（profiling 输出格式与测量纪律）、第 10 章（README 结构/简历 bullet/面试
-   25 问）、第 12.5 节（W01-W04 文档提示词）。
-2. W8 的产出（详细验收见 `docs/ROADMAP.md` W8 表）：
-   - `docs/profiling.md`：汇总 bench（SAP vs BruteForce）、休眠前后 Step、求解器模式对比的**全部真实
-     数字 + 测量环境**；若接 Tracy 则附时间线截图（R11）；
-   - `docs/math.md`：SAT 推导、冲量方程、摩擦锥、split impulse bias、warm start 的收敛解释——每一条
-     都要能手推/口述；
-   - `docs/architecture.md` 总图升级（模块依赖 + Step 时序 + 岛屿/休眠状态机）；
-   - `README.md` 完整版：GIF（10 盒稳定 / 2000 物体 SAP / 500 物体休眠 / 多米诺唤醒）、快速开始、
-     架构、性能表、已知限制、Roadmap；确保陌生人 5 分钟内能编译运行；
-   - **已知限制 + 边界测试补强**：退化多边形、零密度、极大速度、超长薄条、极端 mass ratio——所有已知
-     崩溃点都要有 assert 或明确文档；`CheckSane`/`Validate` 覆盖新状态（伪速度、islandId、sleepTime）；
-   - 简历 bullet（设计文档 10.3 模板）与面试问答演练（10.4 清单）；
-   - **tag `v1.0-release`** + GitHub Release 说明（附 GIF）。
-3. 可选优化（只在文档完成后、且以测量为前提）：**2 点接触 2×2 block solver**（最高优先技术债：消除
-   薄片残余抖动 → 更快入睡；改求解器前先读 `docs/dev-interfaces.md` 第 6 节不变量，回归弱 hash 必须
-   保持不变或解释变化）、R11 Tracy 正式接入、R17 渲染插值、R15 冷热拆分（**先 profiling 证明热点**）。
-4. 收尾：三 preset clean 验证、8 个 demo smoke、`--broadphase` A/B、回归 `--check`、工作区外 death test
-   全量，然后更新全部 docs 并打 tag。
+> v1.0-release 已交付（W8 完成：完整文档 + README 中英双语 + 5 GIF + 35 个边界测试 + CI clang-format）。
+> 物理与公共 API 进入**冻结维护模式**；v1.1 的详细任务卡与风险见 [`HANDOFF.md`](HANDOFF.md) §5。
+
+1. 读 `HANDOFF.md` §5（v1.1 任务卡与优先级）与 `docs/dev-interfaces.md` 第 2 节剩余项
+   （R8 block solver、R11 Tracy、R15 冷热拆分、R17 插值）。
+2. **按优先级**：
+   1. **2 点接触 2×2 block solver**（最高优先技术债）：消除薄片/2 点残余抖动 → 更快入睡；
+      **会改变回归 hash** → 必须更新 golden 并在 devlog 写 old/new + 物理原因；先建对照矩阵
+      （10 盒塔 / 薄片 / Dominoes / Pyramid200）与"三模式逐位一致"回归测试。
+   2. **Tracy 正式接入**（R11）：按设计文档 8.1 只埋 8 个 Step 区段 + SAP::Sort/Scan + 计数器/曲线；
+      纯观测，回归 hash 必须不变；截图进 `docs/profiling.md`。
+   3. **渲染插值**（R17）：`StepAccumulator::GetAlpha()` 已预留；需要 Body 上一帧 transform 缓存
+      （World 追加，不改公共语义），纯渲染层，物理 hash 不变。
+   4. **BodySim/BodyState 冷热拆分**（R15）：**只有 Tracy 数据证明 body 布局是热点才做**；
+      W7/W8 的 packed 测量（0.87x）不支持这个假设。
+   5. 多场景回归 golden（R12 扩展）、岛屿级并行、DynamicAABBTree（可选宽相第三实现）。
+3. 每一项都要走完整交付门：任务卡 + 测量方案 → 三 preset clean 全绿 0 警告 → 8 demo smoke +
+   `--broadphase` A/B + 回归 `--check` + 工作区外 death tests → 更新 docs（profiling 数字口径、
+   devlog 卡点）→ Conventional Commits + tag。
+4. **纪律**：v1.0 之后纯重构/优化 hash 必须不变；只有 block solver 这类**有意的物理变更**才允许
+   更新 golden，且必须解释。任何"更快"的改动都要先有测量（W7 的 packed 实测反而慢是教训）。
 
 ### W7 的岛屿/休眠约定（改 World/求解器前必读）
 
@@ -207,7 +213,7 @@ ctest --preset vs2022-debug
 - **唤醒必须是整岛**：外力/冲量/SetTransform/SetVelocity 走 `WakeIslandOfBody`；宽相邻近唤醒放在
   宽相与 fallback **共享**的 `UpdateContacts` 开头（不要放 `UpdateBroadPhase`，那里无宽相会提前 return）。
 - **阈值不动**：`kSleepLinearTolerance=0.01` 等保持设计值；入睡慢用 block solver 解决，不是调阈值。
-- **打包默认关闭**：`packIslandBodies=false`（Release 实测 packed 慢 18%）；打包路径保留且被位级测试覆盖。
+- **打包默认关闭**：`packIslandBodies=false`（W8 复测 0.87x，比 flat 慢约 15%）；打包路径保留且被位级测试覆盖。
 - 不变量清单见 `docs/dev-interfaces.md` 第 6 节「W7 起生效的岛屿/休眠不变量」。
 
 ### W6 的宽相约定（改宽相/World 接线前必读）

@@ -1,4 +1,4 @@
-# 开发环境与构建（Week 1 现状）
+# 开发环境与构建（v1.0）
 
 > 目标读者：第一次 clone 本项目的人（包括未来的你）。按本文三步即可从零构建。
 
@@ -11,7 +11,7 @@
 | CMake | ≥ 3.25（presets 文件用了 v6 语法） | 3.31 已验证 |
 | Git | 任意较新版本 | |
 | Ninja | `bootstrap.ps1` 优先使用 Visual Studio 自带的 Ninja，没有才下载到 `%LOCALAPPDATA%\Physics2D\tools`（刻意放在仓库外） | 也支持 VS 生成器预设 |
-| Python | 可选，仅 `bootstrap.ps1` 用来下载 clang-format | |
+| Python | 可选；`bootstrap.ps1` 用它下载 clang-format，**GIF 录制（`scripts/record_gifs.ps1`）需要 Python 3 + Pillow**（本机无 ffmpeg） | |
 
 **本仓库不使用 vcpkg。** 设计文档允许 FetchContent 与 vcpkg 二选一，本项目选 FetchContent，
 保证 `git clone` 后无需预装 vcpkg 即可配置。详见 `cmake/Dependencies.cmake`：
@@ -97,36 +97,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/format.ps1
 # 生成 compile_commands.json（clangd/VSCode 用）：configure 时已默认开启
 ```
 
-## 5. 测试台操作（Week 1-4）
+## 5. 测试台操作（v1.0）
+
+交互按键/面板、8 个 demo 的看点、GIF 录制与复现步骤见 [`demos.md`](demos.md)；
+人眼验收脚本见 [`testing.md`](testing.md) §4。最常用的几条：
 
 | 操作 | 按键 / 方式 |
 | --- | --- |
-| 平移 | 鼠标中键拖拽 |
-| 缩放 | 滚轮（以鼠标位置为中心） |
-| 复位视角 | `R` |
-| 暂停 / 单步 | 左侧 ImGui 面板 |
-| 重力调节 | 左侧 ImGui 滑块（实时写回 `World::SetGravity`） |
-| 场景切换 | 左侧场景下拉框（`FallingBall` / `SphereStack` / `BoxStack`） |
-| 恢复系数（FallingBall） | 场景面板的 restitution 滑块（实时 `World::SetRestitution`） |
-| 显示接触点 / 法线 | 左侧 Display 开关（Contact points / Contact normals） |
-| 重新落下 / 重置叠放 | 场景面板按钮 |
+| 平移 / 缩放 / 复位视角 | 鼠标中键拖拽 / 滚轮 / `R` |
+| 暂停 / 单步 | `Space` / `.`（暂停时逐帧） |
+| 慢放 1x / 0.5x / 0.25x | `1` / `2` / `3` |
+| 场景切换 | 左侧场景下拉框（8 个 demo，见 demos.md） |
+| 求解器参数 / 宽相 / 休眠开关 | Solver Settings 面板（实时写回 `World::SetSolverSettings` / `SetBroadPhase`） |
+| 接触调试 | Contacts 面板：点击一行高亮，显示法线/穿透/累计冲量柱状条与摩擦锥占用 |
 
-状态面板显示 shapes / contacts / 最大穿透（mm）、FPS、Step 耗时；`SphereStack`/`BoxStack`
-场景面板还会显示每个球/方块的位置、速度、倾斜角。Week 4 的求解器仍只有法向冲量
-（无摩擦、无 warm starting），所以 **BoxStack 的 10 层塔会塌**——这是 W4 的预期基线，
-Week 5 加摩擦 + warm starting 后会站立（`v0.5-stable-stack` 里程碑）。
-
-自动化冒烟测试（不依赖人眼看窗口）：
+自动化冒烟测试（不依赖人眼看窗口；v1.0 canonical 值）：
 
 ```powershell
-# 单球落地：150 帧后 contacts=1，球心 y≈0.495（半径 0.5，穿透 5.000 mm = kLinearSlop）
+# 单球落地：150 帧后 contacts=1、max_pen=5.057mm、已入睡
 .\build\debug\testbed\physics2d_testbed.exe --demo FallingBall --smoke 150 --hidden
 
-# 3 球叠放：300 帧后 bodies=4 contacts=3，三球站立
+# 3 球叠放：300 帧后 bodies=4 contacts=3、max_pen=3.063mm、sleeping=3
 .\build\debug\testbed\physics2d_testbed.exe --demo SphereStack --smoke 300 --hidden
 
-# 10 层方块塔（W4 初版）：300 帧后塌落为 ground-only 接触（预期；W5 修复）
-.\build\debug\testbed\physics2d_testbed.exe --demo BoxStack --smoke 300 --hidden
+# 10 层方块塔：600 帧后塔站立（max_pen=3.893mm、top y=9.478、max_speed=0.007），900 步后入睡
+.\build\debug\testbed\physics2d_testbed.exe --demo BoxStack --smoke 600 --hidden
 ```
 
 `--demo` 名字大小写/分隔符不敏感；未知名字打印可用列表并以退出码 2 退出。
