@@ -123,6 +123,26 @@ jobs:
         run: ./build/headless/tests/physics2d_regression --check tests/regression/golden/default_600.txt
 
   # ---------------------------------------------------------------------------
+  # Format guard (Week 8 delivery): every first-party C++ file must match the
+  # committed .clang-format. This is a pure grep-style gate (no build), the
+  # counterpart of scripts/format.ps1 -Check on developer machines. clang-tidy
+  # stays out of v1.0 (no local LLVM toolchain); it is a v1.1 candidate.
+  # ---------------------------------------------------------------------------
+  format:
+    name: clang-format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-format
+      - name: Check formatting
+        run: |
+          set -euo pipefail
+          find include src tests testbed bench -type f \( -name '*.h' -o -name '*.cpp' \) -print0 \
+            | xargs -0 clang-format --style=file --dry-run --Werror
+          echo "clang-format OK"
+
+  # ---------------------------------------------------------------------------
   # Layering guard (Section 1.2 "铁律"): physics2d_core must never include a
   # rendering / windowing / UI header. Tracy is the single documented exception
   # (Profiler.h, only under TRACY_ENABLE).
