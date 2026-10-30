@@ -116,6 +116,19 @@ void ContactSolver::SolvePosition(std::vector<Body>& bodies, std::vector<Contact
     // grouped pass so the per-contact arithmetic cannot drift between modes.
     const auto buildContact = [&](size_t contactIndex) {
         const Contact& contact = contacts[contactIndex];
+        // Week 8 boundary contract: this layer indexes bodies and points exactly
+        // like the velocity layer, which already asserts these preconditions in
+        // Prepare. Duplicating them here keeps the position layer a total function
+        // for hand-built contact lists too (it is a public sub-step, not only
+        // reachable through World).
+        assert(contact.bodyA.index >= 0 && static_cast<size_t>(contact.bodyA.index) < bodies.size() &&
+               "ContactSolver::SolvePosition: bodyA index out of range");
+        assert(contact.bodyB.index >= 0 && static_cast<size_t>(contact.bodyB.index) < bodies.size() &&
+               "ContactSolver::SolvePosition: bodyB index out of range");
+        assert(contact.manifold.pointCount >= 0 && contact.manifold.pointCount <= kMaxManifoldPoints &&
+               "ContactSolver::SolvePosition: pointCount out of range");
+        assert(p2::IsValid(contact.manifold.normal) && std::isfinite(contact.manifold.penetration) &&
+               "ContactSolver::SolvePosition: non-finite manifold state");
         const Body& bodyA = bodies[static_cast<size_t>(contact.bodyA.index)];
         const Body& bodyB = bodies[static_cast<size_t>(contact.bodyB.index)];
 
@@ -195,6 +208,14 @@ void ContactSolver::SolvePosition(std::vector<Body>& bodies, std::vector<Contact
         // the velocity layer's skip in Prepare.
         for (size_t contactIndex = 0; contactIndex < contacts.size(); ++contactIndex) {
             const Contact& contact = contacts[contactIndex];
+            // Validate before the direct indexing below (the MSVC iterators would
+            // otherwise trip their own unchecked subscript assert first, which is
+            // not a readable contract message). buildContact repeats these asserts
+            // because the grouped path reaches it without passing through here.
+            assert(contact.bodyA.index >= 0 && static_cast<size_t>(contact.bodyA.index) < bodies.size() &&
+                   "ContactSolver::SolvePosition: bodyA index out of range");
+            assert(contact.bodyB.index >= 0 && static_cast<size_t>(contact.bodyB.index) < bodies.size() &&
+                   "ContactSolver::SolvePosition: bodyB index out of range");
             const Body& bodyA = bodies[static_cast<size_t>(contact.bodyA.index)];
             const Body& bodyB = bodies[static_cast<size_t>(contact.bodyB.index)];
             const bool bothAsleep = !bodyA.isAwake && !bodyB.isAwake;

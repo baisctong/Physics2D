@@ -75,7 +75,19 @@ bool SetPolygon(PolygonShape& shape, const Vec2* vertices, int32_t count) noexce
     const float minEdgeLengthSquared = p2::kLinearSlop * p2::kLinearSlop;
     for (int32_t i = 0; i < count; ++i) {
         const int32_t next = (i + 1) % count;
-        if (LengthSquared(vertices[next] - vertices[i]) < minEdgeLengthSquared) {
+        const float edgeLengthSquared = LengthSquared(vertices[next] - vertices[i]);
+        if (edgeLengthSquared < minEdgeLengthSquared) {
+            return false;
+        }
+        // Week 8 boundary hardening: finite coordinates can still overflow this
+        // squared length (half extents around 1e19 produce a length squared of
+        // ~4e38 > FLT_MAX). Normalized() would then return (0,0), so the stored
+        // edge normal would silently stop being unit length and every SAT axis
+        // built from it would be meaningless. Such geometry is far outside the
+        // supported 0.1-10 m scene scale, so it is rejected like any other bad
+        // input instead of producing a shape that only fails later in the mass
+        // properties / narrow phase.
+        if (!std::isfinite(edgeLengthSquared)) {
             return false;
         }
     }
@@ -90,6 +102,13 @@ bool SetPolygon(PolygonShape& shape, const Vec2* vertices, int32_t count) noexce
         const float cross = Cross(vertices[i], vertices[next]);
         twiceArea += cross;
         centroidSum += (vertices[i] + vertices[next]) * cross;
+    }
+    // Week 8 boundary hardening: overflow guard on the shoelace sum. A finite
+    // `twiceArea` is a precondition of the centroid division below; without this
+    // check an infinite sum passes the area test `inf > kMinPolygonArea` and the
+    // centroid becomes inf * 0 = NaN.
+    if (!std::isfinite(twiceArea)) {
+        return false;
     }
     const float area = 0.5f * twiceArea;
     if (!(area > kMinPolygonArea)) {
@@ -111,6 +130,14 @@ bool SetPolygon(PolygonShape& shape, const Vec2* vertices, int32_t count) noexce
 
     // C = (1 / (6A)) * sum((P_i + P_{i+1}) * (P_i x P_{i+1})), with 6A = 3*(2A).
     const Vec2 centroid = centroidSum * (1.0f / (3.0f * twiceArea));
+    // Week 8 boundary hardening: the weighted centroid sum can overflow even when
+    // the shoelace sum itself is finite (large coordinates, tiny area). A
+    // non-finite centroid would silently poison ComputePolygonMass and the body
+    // mass properties, so it is treated as invalid input here - the caller gets a
+    // deterministic false instead of a shape that fails one module later.
+    if (!p2::IsValid(centroid)) {
+        return false;
+    }
 
     // Copy first, then compute the normals: edge i needs vertices[i + 1], so a
     // single fused loop would read the still-default next vertex for i = count - 1.

@@ -266,6 +266,14 @@ void ContactSolver::BuildConstraintsForContact(const std::vector<Body>& bodies,
     const Body& bodyA = bodies[static_cast<size_t>(contact.bodyA.index)];
     const Body& bodyB = bodies[static_cast<size_t>(contact.bodyB.index)];
 
+    // Week 8 boundary contract: the solver is a public unit (the unit tests build
+    // contacts by hand), so non-finite manifold data is a caller bug worth a
+    // readable assert instead of silent NaN propagation into every body the
+    // constraint touches. World's narrow phase can never produce it - there the
+    // point would be caught by the end-of-step CheckSane scan instead.
+    assert(p2::IsValid(contact.manifold.normal) && std::isfinite(contact.manifold.penetration) &&
+           "ContactSolver::Prepare: non-finite manifold normal/penetration");
+
     // mu is already the combined material value (World computes sqrt(muA*muB));
     // combining it again here would square the friction.
     const float friction = contact.friction;

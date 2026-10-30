@@ -588,6 +588,17 @@ void World::Step(float dt, int32_t velocityIterations, int32_t positionIteration
     // stored SolverSettings defaults through this same path.
     assert(velocityIterations >= 0 && positionIterations >= 0 &&
            "World::Step: iteration counts must be non-negative");
+    // Release fallback (Week 8 boundary audit): assert() is compiled out with
+    // NDEBUG, and the iteration counts are the solver budgets, so a negative value
+    // must not be stored as "negative iterations". Clamping to zero keeps the call
+    // a defined no-iteration solve instead of silently relying on the for-loops
+    // happening not to execute; the debug assert still flags the programmer error.
+    if (velocityIterations < 0) {
+        velocityIterations = 0;
+    }
+    if (positionIterations < 0) {
+        positionIterations = 0;
+    }
     m_activeVelocityIterations = velocityIterations;
     m_activePositionIterations = positionIterations;
 
@@ -783,23 +794,43 @@ void World::CheckSane() const {
         // scan as the real state.
         const bool pseudoOk =
             p2::IsValid(body.pseudoLinearVelocity) && std::isfinite(body.pseudoAngularVelocity);
-        if (transformOk && velocityOk && accumulatorOk && pseudoOk) {
+        // Week 8 (boundary audit): the island/sleep bookkeeping added in Week 7 is
+        // simulated state too, so the debug scan covers it as well:
+        //  - islandId is either -1 (not an island member, flat mode) or an index
+        //    into the partition built by the LAST BuildIslands. A stale-but-in-range
+        //    id is legal (the partition is a per-step snapshot, e.g. after
+        //    DestroyBody between steps); an out-of-range id is a bug.
+        //  - sleepTime is a finite, non-negative qualification timer.
+        //  - a sleeping dynamic body has exactly zero real and pseudo velocities:
+        //    UpdateSleep clears all four when an island sleeps, so a non-zero value
+        //    means a wake path was bypassed or a phase wrote a frozen body.
+        const bool islandOk =
+            body.islandId >= -1 && body.islandId < static_cast<int32_t>(m_islandBodyIndices.size());
+        const bool sleepOk = std::isfinite(body.sleepTime) && body.sleepTime >= 0.0f;
+        const bool frozenOk =
+            body.isAwake || body.type != BodyType::Dynamic ||
+            (body.linearVelocity == Vec2{0.0f, 0.0f} && body.angularVelocity == 0.0f &&
+             body.pseudoLinearVelocity == Vec2{0.0f, 0.0f} && body.pseudoAngularVelocity == 0.0f);
+        if (transformOk && velocityOk && accumulatorOk && pseudoOk && islandOk && sleepOk && frozenOk) {
             continue;
         }
         // Report before asserting: the abort itself carries no context, and
         // "which body, which field" is the most useful fact when a solver
         // explodes. This is the debug-only safety net of Section 3.4.
         std::fprintf(stderr,
-                     "World::CheckSane: body %d ('%s') has non-finite state: pos=(%g, %g) "
-                     "vel=(%g, %g) w=%g force=(%g, %g) torque=%g pseudoVel=(%g, %g) pseudoW=%g\n",
+                     "World::CheckSane: body %d ('%s') has invalid state: pos=(%g, %g) "
+                     "vel=(%g, %g) w=%g force=(%g, %g) torque=%g pseudoVel=(%g, %g) pseudoW=%g "
+                     "islandId=%d islandCount=%d sleepTime=%g awake=%d type=%d\n",
                      index, body.debugName.c_str(), static_cast<double>(body.xf.p.x),
                      static_cast<double>(body.xf.p.y), static_cast<double>(body.linearVelocity.x),
                      static_cast<double>(body.linearVelocity.y), static_cast<double>(body.angularVelocity),
                      static_cast<double>(body.force.x), static_cast<double>(body.force.y),
                      static_cast<double>(body.torque), static_cast<double>(body.pseudoLinearVelocity.x),
                      static_cast<double>(body.pseudoLinearVelocity.y),
-                     static_cast<double>(body.pseudoAngularVelocity));
-        assert(false && "World::CheckSane: non-finite body state (NaN/Inf)");
+                     static_cast<double>(body.pseudoAngularVelocity), body.islandId,
+                     static_cast<int32_t>(m_islandBodyIndices.size()), static_cast<double>(body.sleepTime),
+                     body.isAwake ? 1 : 0, static_cast<int32_t>(body.type));
+        assert(false && "World::CheckSane: invalid body state (NaN/Inf/island/sleep)");
     }
 
     // Contact data is narrow-phase output: a NaN here would propagate into the

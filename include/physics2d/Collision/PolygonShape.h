@@ -19,6 +19,11 @@
 //   - a redundant collinear vertex (the middle vertex can be removed)
 //   - clockwise winding (signed area < 0) or a non-convex vertex
 //   - (near-)zero area
+//   - finite but overflowing coordinates (edge length squared, shoelace sum or
+//     weighted centroid sum not finite). Week 8 boundary hardening: such input used
+//     to be accepted and produced (0,0) edge normals / an inf centroid that only
+//     failed later in the narrow phase or mass properties; it is now rejected like
+//     any other bad geometry (tests/unit/test_boundary_solver.cpp).
 //
 // Note for the reviewer: P04 also mentions silently merging adjacent vertices
 // closer than kLinearSlop. This project rejects them instead, because the design

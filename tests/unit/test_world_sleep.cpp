@@ -422,11 +422,14 @@ TEST(WorldSleepTest, ApplyForceWakesTheWholeIsland) {
 
 TEST(WorldSleepTest, AwakeBodyFatAabbProximityWakesSleepingIsland) {
     // P13 wake condition 2, tested on both pair sources:
-    //  - installed broad phase: the proximity wake lives in UpdateBroadPhase and
-    //    runs before the narrow phase, so a body that merely ENTERS the sleeping
-    //    island's fat AABB (no geometric contact yet) wakes the whole island;
-    //  - O(N^2) fallback: no pair list exists, so CreateContactForPair performs the
-    //    identical check.
+    //  - installed broad phase: the proximity wake lives in the shared wake pass at
+    //    the start of World::UpdateContacts (W7 deviation: it was originally planned
+    //    for UpdateBroadPhase, but that function early-returns when no broad phase is
+    //    installed, which broke the no-broad-phase equivalence tests); the pass runs
+    //    before the narrow phase, so a body that merely ENTERS the sleeping island's
+    //    fat AABB (no geometric contact yet) wakes the whole island;
+    //  - O(N^2) fallback: the same shared pass walks the fallback pair candidates with
+    //    the identical check, so both pair sources wake at the same step.
     // The probe is a 0.4 m box placed at x = 0.75: its tight AABB starts at 0.55,
     // the settled tower's fat AABB ends at ~0.6 -> the FAT bounds overlap by ~0.05
     // while the shapes stay 0.05 m apart (verified below: no contact with the
