@@ -1,7 +1,90 @@
-# 架构说明（Week 1-7）
+# 架构说明（Week 1-8 · v1.0）
 
-> 本文描述**当前已实现**的架构，以及为 Week 2-8 预留的挂载点。
-> 公式推导见设计文档第 6 章与未来 `docs/math.md`；接口预留清单见 `docs/dev-interfaces.md`。
+> 本文描述 **v1.0-release 已实现**的架构：分层与依赖、数据结构与所有权、`World::Step` 的 11 阶段
+> 流水线、宽相/窄相/求解/岛屿休眠的数据流与关键设计理由。
+> 公式推导见 [`math.md`](math.md)；全部实测性能数字与测量条件见 [`profiling.md`](profiling.md)；
+> 边界契约与已知限制见 [`boundary-contracts.md`](boundary-contracts.md)；接口预留清单与偏差登记见
+> [`dev-interfaces.md`](dev-interfaces.md)。
+>
+> Week 8 是文档与交付周：**物理行为与公共 API 均未改变**（回归弱 hash `588d30e70f9b4ddd` 不变），
+> 新增内容只有文档、边界测试与 testbed 的帧捕获工具。
+
+## 0. 一张图总览（W8 新增）
+
+这张图把四个视角压在一页里：**模块依赖方向**（Layer 1/2/3）、**Step 的 11 阶段时序**（实线箭头）、
+**数据所有权**（虚线指向 World 持有的容器）、**岛屿/休眠状态机**（右下角，与阶段 4/10 对应）。
+细节分别见 §1（模块）、§3（数据布局）、§4（流水线）、§4.6（时序图）、§4.7（状态机）。
+
+```mermaid
+flowchart TB
+    subgraph ENTRY["入口层"]
+        CALL["调用方：testbed / tests / bench / regression"]
+    end
+
+    subgraph L1["Layer 1 · physics2d_core（零第三方依赖，headless 可跑）"]
+        direction TB
+        subgraph MODULES["模块依赖（箭头 = include 方向）"]
+            MATH["Math<br/>Vec2 / Mat2 / Rot / Transform / AABB"]
+            CORE["Core<br/>World / Body / IDPool / Settings / IBroadPhase / Profiler"]
+            COL["Collision<br/>Shapes / SAT / Clipping / Analytic / Contact / BroadPhase{BF,SAP}"]
+            SOL["Solver<br/>ContactSolver（速度+位置）/ Island"]
+            MATH --> CORE --> COL --> SOL
+        end
+
+        subgraph PIPE["World::Step —— 11 阶段固定顺序（不可变）"]
+            direction TB
+            P1["1 IntegrateForces<br/>v += g·dt（跳过休眠体）"]
+            P2["2 UpdateBroadPhase<br/>fat AABB → proxy → 候选对"]
+            P3["3 UpdateContacts<br/>窄相 manifold；proximity wake"]
+            P4["4 BuildIslands<br/>DFS 连通分量 + 规范序"]
+            P5["4b Prepare + 5 WarmStart<br/>K_n/K_t、bias、继承冲量"]
+            P6["6 SolveVelocity ×N<br/>PGS：法向 → 摩擦锥"]
+            P7["7 IntegratePositions<br/>xf += v·dt（钳制位移）"]
+            P8["8 SolvePosition ×M<br/>split impulse 伪速度层"]
+            P9["9 Synchronize<br/>tight AABB + fat margin"]
+            P10["10 UpdateSleep<br/>整岛原子计时/入睡"]
+            P11["11 Validate<br/>NaN/Inf 扫描"]
+            P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8 --> P9 --> P10 --> P11
+        end
+    end
+
+    subgraph STATE["岛屿/休眠状态机（每岛一个）"]
+        direction LR
+        AWAKE["Awake"] -->|"|v|<0.01 且 |w|<0.01 连续 0.5s"| SLEEPING["Sleeping"]
+        SLEEPING -->|"外力/冲量/SetTransform/SetVelocity"| AWAKE
+        SLEEPING -->|"邻近唤醒：awake 体 fat AABB 与休眠岛 proxy 重叠"| AWAKE
+        SLEEPING -.->|"跳过 AABB 更新/窄相/求解<br/>保留 proxy 与上一帧 contact"| SLEEPING
+    end
+
+    subgraph DATA[("World 持有的数据（阶段 9/10 写，阶段 2/3 读）")]
+        direction LR
+        D1["m_bodies：槽位数组（slot == Handle.index，永不压实）"]
+        D2["m_shapes：Shape tagged union"]
+        D3["m_contacts / m_previousContacts：每帧重建 + 上帧 warm-start 源"]
+        D4["m_broadPhasePairs：规范化 (i<j, sorted, deduped)"]
+        D5["m_islandBodyIndices / m_islandContactIndices：规范序分区"]
+    end
+
+    ENTRY --> L1
+    P2 -.-> D4
+    P3 -.-> D3
+    P4 -.-> D5
+    P9 -.-> D1
+    STATE -.->|"阶段 10 写 isAwake/sleepTime"| D1
+```
+
+**读图要点**
+
+1. **依赖只有一个方向**：`Math → Core → Collision → Solver`。Core 的公共头只前向声明
+   `ContactSolver`（实现文件才 include Solver 头），所以用户 include `World.h` 不会把求解器拖进编译单元；
+   `physics2d_core` 静态库里两者是同一条链，不构成单独的库。
+2. **11 个阶段是顺序依赖的**：宽相用上一步 `Synchronize` 写下的 AABB（一步滞后，由 fat margin 吸收）；
+   接触锚点是**生成时刻**的几何（`IntegratePositions` 之前）；位置层在 `IntegratePositions` 之后必须
+   用新 transform 重算杠杆臂。
+3. **休眠是整岛原子的状态机**：进入/离开 `Sleeping` 的最小单位是岛，不是 body；休眠岛保留 proxy 与
+   上一帧 contact，因此仍参与"邻近唤醒"判定、仍可被整岛唤醒。
+4. **数据所有权**：所有容器归 `World`；`Body::proxyId` / `Body::islandId` 只是 bookkeeping，宽相与
+   岛屿模块本身不拥有 body。
 
 ## 1. 分层与依赖方向
 
@@ -56,7 +139,7 @@ CI 的 `layering` job 用 grep 强制这条规则，headless job 则证明核心
 
 ## 3. 关键数据布局
 
-### 3.1 Body：冷热分离（Week 1 单结构，拆分顺延到 Week 8）
+### 3.1 Body：冷热分离（v1.0 仍为单一 Body 结构；拆分推迟到 v1.1）
 
 `include/physics2d/Core/Body.h` 按设计文档 3.3 节把字段分成两组，并在注释里标出：
 
@@ -68,12 +151,13 @@ CI 的 `layering` job 用 grep 强制这条规则，headless job 则证明核心
   `aabb`（W6 起为 fat AABB）、`proxyId`（W6 追加，宽相 bookkeeping）。
 
 Week 1-7 用单一 `Body` 结构跑通；**冷热拆分**（`Body` 冷 + `BodySim`/`BodyState` 并行数组）
-W4→W5→W6→W7→**W8** 顺延。W7 的测量改变了这次重构的优先级论证：设计文档 3.3/6.5 期待的"岛内 BodyState
-打包"实测在 Release 下**反而慢 18%**（400 bodies 的整个 Body 数组约 80 KB，本来就装得进 L2，
-每帧 O(bodies) 拷贝成本 > 局部性收益），所以"独立 BodySim/BodyState 数组"只能作为**有待 profiling
-数据支撑**的 W8 可选项，不应以"性能"为名硬做。`World` 的公共 API 仍只暴露**基本类型访问器**
-（`GetPosition` / `GetLinearVelocity` / `GetMass` …），`GetBody()` / `GetBodies()` 明确标注为
-debug/testbed 用途——这保证了将来真要做拆分时不会外溢到用户代码。
+W4→W5→W6→W7→W8 连续顺延，**v1.0 最终决定不做**。W7 的测量已经否定了这次重构的收益假设：设计文档
+3.3/6.5 期待的"岛内 BodyState 打包"实测在 Release 下**反而更慢**（W8 复测 0.87x；400 bodies 的整个
+Body 数组约 80 KB，本来就装得进 L2，每帧 O(bodies) 拷贝成本 > 局部性收益）；W8 的 profiling 汇总（见
+[`profiling.md`](profiling.md)）也没有证据表明 body 布局是热点（热点在宽相/求解迭代，且已通过 SAP 与
+岛屿休眠解决）。因此"独立 BodySim/BodyState 数组"进入 v1.1 候选（R15），前提是先有 Tracy 实测数据。
+`World` 的公共 API 仍只暴露**基本类型访问器**（`GetPosition` / `GetLinearVelocity` / `GetMass` …），
+`GetBody()` / `GetBodies()` 明确标注为 debug/testbed 用途——这保证了将来真要做拆分时不会外溢到用户代码。
 
 ### 3.2 Handle 与 IDPool
 
@@ -96,7 +180,7 @@ flowchart LR
 flowchart LR
     FT["frameTime（可变）"] --> SA["StepAccumulator::Advance()"]
     SA -->|"steps ∈ [0,5]"| WS["World::Step(dt=1/60) × N"]
-    SA -->|alpha ∈ [0,1)| RI["渲染插值（Week 7 可选）"]
+    SA -->|alpha ∈ [0,1)| RI["渲染插值（v1.1 可选，v1.0 未实现）"]
 ```
 
 - 物理永远只看到 `kFixedTimeStep = 1/60`；warm starting 与 split impulse 的假设都依赖固定 dt。
@@ -170,7 +254,44 @@ flowchart LR
 - 其余解析路径：圆-多边形（最近边/顶点 Voronoi 区域，P06）、多边形-平面（顶点深度，盒底两顶点
   都贴地时返回 2 点，是 BoxStack 稳定支撑的关键）。
 
-## 4. World::Step 流水线（固定顺序，Week 1-7 已实现 12 个阶段）
+### 3.7 数据所有权总图（W8 新增）
+
+所有数据由 `World` 独占持有；模块之间只借指针/索引。这张图回答"谁拥有、谁每帧写、谁只读"：
+
+```mermaid
+flowchart LR
+    subgraph WORLD["World（唯一所有者）"]
+        BODIES["m_bodies: vector&lt;Body&gt;<br/>槽位数组，index == Handle.index"]
+        SHAPES["m_shapes: vector&lt;Shape&gt; + IDPool"]
+        CONTACTS["m_contacts / m_previousContacts<br/>vector&lt;Contact&gt;（每帧重建/上帧保留）"]
+        PAIRS["m_broadPhasePairs<br/>规范化 body-index 对"]
+        ISLAND["m_islandBodyIndices / m_islandContactIndices<br/>规范序分区（指针交给 solver）"]
+        BPMAP["m_proxyToBody<br/>proxy id → body slot 反向映射"]
+        BP["m_broadPhase: unique_ptr&lt;IBroadPhase&gt;<br/>（可为空 = O(N²) fallback）"]
+        SOLVER["m_contactSolver: unique_ptr&lt;ContactSolver&gt;<br/>（前向声明，实现文件才 include）"]
+    end
+
+    BODIES -->|"Body::shape: ShapeHandle"| SHAPES
+    BODIES -->|"Body::proxyId（-1 = 无 proxy）"| BPMAP
+    BPMAP -->|"Add/Update/RemoveProxy"| BP
+    BODIES -->|"BuildIslands：dynamic-dynamic contact 是边"| ISLAND
+    CONTACTS -->|"ContactID::Key() 匹配继承"| CONTACTS
+    ISLAND -->|"SetIslandPartition（指针视图）"| SOLVER
+    CONTACTS -->|"const Contact& 视图"| SOLVER
+    SOLVER -->|"写回累计冲量 → ContactPoint"| CONTACTS
+    SOLVER -->|"直接读写热数据（position/velocity/mass）"| BODIES
+```
+
+- `Body::islandId`（无宽相/未启用岛屿时为 -1）、`Body::sleepTime`、`Body::isAwake` 是状态字段，
+  不是所有权；testbed/debug UI 通过 `World` 访问器读取。
+- `ContactSolver` 的生命周期与 `World` 绑定，`SetIslandPartition` 只传指针视图——分区容器仍归 `World`，
+  所以求解器不会在销毁/重建场景时悬空。
+- `m_previousContacts` 是 warm starting 与"休眠-休眠 pair 复用"的数据源：每帧 `UpdateContacts` 重建
+  `m_contacts` 后交换/匹配，**累计冲量只在 `SolveVelocity` 写回、`Prepare` 读取**。
+
+
+
+## 4. World::Step 流水线（固定顺序，v1.0 已实现全部阶段）
 
 | # | 阶段 | 当前状态 | 预留方法 |
 | --- | --- | --- | --- |
@@ -278,18 +399,74 @@ World 侧见 §3.6：候选对按 body index 规范化（`i<j`、排序、去重
   `ContactSolver` 因此支持三模式：`flat`（无分区）、**`grouped-direct`（默认；按岛序迭代、直接读写
   Body）**、`grouped-packed`（`packIslandBodies=true`；把岛内热数据拷进连续 scratch 再写回）。
   三模式被测试断言逐位一致（两岛 276 次 float + 密集单岛 21,760 次 float 比较 0 差异）。
-- **packed 为什么默认关**：Release 实测 400 bodies/760 contacts 单岛 8 迭代 flat 1.741 ms vs
-  packed 2.122 ms（慢 18%）——400 个 Body ≈ 80 KB 本来就装得进 L2，每帧 O(bodies) 拷贝 > 局部性收益。
-  packed 保留为 opt-in（给 >cache 规模场景）并持续被位级测试覆盖。
+- **packed 为什么默认关**：W8 复测（Release，400 bodies/760 contacts 单岛、8 迭代、8 次运行中位）
+  flat 1.860 ms / grouped-direct 1.908 ms（0.97x，噪声内）/ packed 2.137 ms（**0.87x，比 flat 慢约
+  15%**）；32 迭代同样是 packed 最慢（0.89x）——400 个 Body ≈ 80 KB 本来就装得进 L2，每帧 O(bodies)
+  拷贝 > 局部性收益。packed 保留为 opt-in（给 >cache 规模场景）并持续被位级测试覆盖。
 - **休眠**：`World::UpdateSleep` 按岛累计 `sleepTime`，岛内全部成员超过 `kSleepTimeThreshold` 时
   整岛 `isAwake=false` 并清零真实/伪速度（整岛原子：单 body 睡眠会在岛边界留下半冻状态导致穿模）。
   `UpdateBroadPhase` 对休眠 body 跳过 AABB 更新但**保留 proxy**；`UpdateContacts` 对"双方都不 awake"
   的 pair 复用上一帧 contact（不跑窄相、保留岛图与 warm-start 数据）；唤醒由 `WakeIslandOfBody`
   整岛执行（外部力/冲量/transform，或宽相邻近接触）。`SolverSettings::enableSleeping` 可整体关闭。
 
+### 4.6 Step 11 阶段时序图（W8 新增）
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Caller as 调用方（StepAccumulator / tests）
+    participant W as World
+    participant BP as IBroadPhase（BF / SAP）
+    participant NP as 窄相（Collide* / SAT / Clipping）
+    participant IS as Island（BuildIslandPartition）
+    participant CS as ContactSolver
+    Caller->>W: Step(dt, velIters, posIters)
+    W->>W: 1 IntegrateForces（跳过休眠体）
+    W->>BP: 2 UpdateBroadPhase：AABB → proxy；QueryPairs
+    BP-->>W: 候选 proxy 对 → 规范化 (i<j, sorted, deduped)
+    W->>NP: 3 CreateContactForPair（休眠-休眠 pair 跳过窄相）
+    NP-->>W: Manifold + ContactID；MatchAndInheritImpulses
+    Note over W: UpdateContacts 开头：proximity wake pass（宽相/fallback 共享）
+    W->>IS: 4 BuildIslands：DFS + 规范序
+    IS-->>W: islandId / m_islandBodyIndices / m_islandContactIndices
+    W->>CS: 4b Prepare(dt) + 5 WarmStart（按岛；休眠岛跳过）
+    W->>CS: 6 SolveVelocity ×velocityIterations（法向→切向，摩擦锥）
+    W->>W: 7 IntegratePositions（跳过休眠体；钳制单步位移）
+    W->>CS: 8 SolvePosition ×positionIterations（伪速度，真实速度只读）
+    W->>W: 9 Synchronize（tight AABB → +kAabbMargin）
+    W->>W: 10 UpdateSleep（整岛原子计时/入睡，清零速度）
+    W->>W: 11 Validate（NaN/Inf 扫描，含伪速度）
+    W-->>Caller: 统计：islands / awake / sleeping / contacts
+```
+
+> 为什么宽相在窄相之前、岛屿在窄相之后：候选对决定窄相输入（顺序影响 PGS 求解顺序），而岛屿图必须
+> 由**本帧**的接触列表构建。`4b Prepare` 与 `5 WarmStart` 共用求解器的约束缓存，`6/8` 是仅有的两个
+> 冲量迭代循环。
+
+### 4.7 岛屿/休眠状态机（W8 新增）
+
+```mermaid
+stateDiagram-v2
+    [*] --> Awake
+    Awake --> Slow: "|v| < kSleepLinearTolerance(0.01)<br/>且 |ω| < kSleepAngularTolerance"
+    Slow --> Awake: "任一成员速度超阈值（抖动尖峰）<br/>sleepTime 每帧重置"
+    Slow --> Sleeping: "整岛所有成员 sleepTime > 0.5 s<br/>→ isAwake=false，真实/伪速度清零"
+    Sleeping --> Sleeping: "整岛零工作：跳过 AABB 更新/窄相/warm start/速度+位置求解<br/>保留 broad-phase proxy 与上一帧 contact（累计冲量冻结）"
+    Sleeping --> Awake: "外部入口：ApplyForce/ApplyLinearImpulse/<br/>SetLinearVelocity/SetTransform → WakeIslandOfBody"
+    Sleeping --> Awake: "邻近唤醒：awake 体 fat AABB 与休眠岛 proxy 重叠<br/>（UpdateContacts 开头的共享 wake pass）"
+```
+
+- 状态属于**岛**而不是 body：`World::UpdateSleep` 只在"整岛都超过 0.5 s"时把整岛置为 `Sleeping`；
+  单个 body 的 `sleepTime` 只用于判断，不单独切换状态。
+- 唤醒是整岛原子操作（`WakeIslandOfBody`）：只唤醒岛内一个 body 会在岛边界留下"半冻"接触，产生穿模；
+  测试对 4 个外部入口 + 邻近唤醒分别断言整岛同时 `isAwake=true`。
+- 休眠岛不是从 World 中移除：proxy 保留、上一帧 contact 保留，所以仍有岛图、仍能被邻近唤醒，
+  且唤醒后 warm starting 数据连续（这暴露并修复过一个 `-0.0` 位级问题，见 devlog W7）。
+
 ## 5. 已冻结的公共接口
 
-Week 7 之后**不应再改签名**的接口（W8 是文档周，只允许追加）：
+v1.0 之后**不应再改签名**的接口（W8 是文档周，只允许追加；v1.0 没有改任何签名，只新增了边界测试与
+testbed 帧捕获 CLI）：
 
 - `World` 的全部 public 方法（生命周期、状态访问器、形状池、接触列表、`Step`、`SetGravity`、
   `SetSolverSettings`、`SetBroadPhase`、`WakeBody`、统计含 `GetIslandCount`/`GetSleepingBodyCount`、
@@ -335,7 +512,7 @@ Week 7 之后**不应再改签名**的接口（W8 是文档周，只允许追加
    休眠是"整岛原子"状态切换，不允许单 body 冻结；休眠岛的 contact 累计冲量被冻结并在唤醒后继续
    warm start（这暴露并修复了一个 `-0.0` 位级处理问题）。
 
-## 7. 性能剖析钩子（预留 W6-W8）
+## 7. 性能剖析钩子（零成本宏；Tracy 实接推迟到 v1.1）
 
 `Core/Profiler.h` 定义了 `P2_PROFILE_ZONE_N(...)` / `P2_PROFILE_PLOT(...)` 等零成本宏：
 
@@ -343,19 +520,27 @@ Week 7 之后**不应再改签名**的接口（W8 是文档周，只允许追加
 - `PHYSICS2D_ENABLE_TRACY=ON` + `PHYSICS2D_TRACY_ROOT=<tracy 源目录>` 时定义该宏并 link 头文件，
   引擎源码无需改动即可采集 Step 各阶段耗时。
 
+**v1.0 的决策（R11）**：Tracy 正式接入推迟到 v1.1。原因：W8 的量化需求已由
+`bench/bench_broadphase`（宽相 A/B、median、CLI/JSON）+ testbed Status 面板（Step 耗时）
++ `docs/profiling.md` 的实测表覆盖；Tracy 客户端会引入一个第三方依赖和 1–3% 采集开销，
+而 W8 的验收标准（`DoD`）要求的是"数字可复现"，不是"时间线截图"。钩子与 CMake 选项保持可用，
+接入是纯 CMake + 埋点清单工作（见设计文档 8.1 的 8 个埋点）。
+
 ## 8. 测试体系（当前）
 
 | 层 | 内容 | 位置 |
 | --- | --- | --- |
-| L1 单测 | 数学库、形状质量/AABB（圆/平面/多边形）、解析碰撞（圆族/圆-多边形/多边形-平面）、SAT+裁剪（位姿矩阵/ContactID 稳定性/cache）、求解器数学（`K_n`/`K_t`/冲量响应/摩擦锥/摩擦角扫描/warm start 播种/split impulse 位置层）、**宽相（BruteForce 参考/随机 AABB/SAP 与 BruteForce 1000 帧逐帧一致/端点不变量）**、**岛屿（DFS 规范序/static 边界/2000 链/三求解模式逐位一致/休眠岛跳过）**、IDPool、accumulator、预留接口编译 | `tests/unit/` |
-| L2 组件 | 完整 Step 场景断言（坠落/钳制/销毁/形状附着/接触持久化/动量守恒/反弹高度/多边形叠放/确定性/10 方块 10 s 里程碑/warmFactor 对比/split impulse 能量对比/无宽相 vs BF vs SAP 三路逐位一致/proxy 生命周期/fat AABB 只加候选/**岛屿统计/岛求解 A/B 逐位一致/整岛休眠与 100 步位不变/4 唤醒入口/邻近唤醒/多米诺连锁唤醒**） | `tests/unit/test_world_*.cpp` |
+| L1 单测 | 数学库、形状质量/AABB（圆/平面/多边形）、解析碰撞（圆族/圆-多边形/多边形-平面）、SAT+裁剪（位姿矩阵/ContactID 稳定性/cache）、求解器数学（`K_n`/`K_t`/冲量响应/摩擦锥/摩擦角扫描/warm start 播种/split impulse 位置层）、**宽相（BruteForce 参考/随机 AABB/SAP 与 BruteForce 1000 帧逐帧一致/端点不变量）**、**岛屿（DFS 规范序/static 边界/2000 链/三求解模式逐位一致/休眠岛跳过）**、IDPool、accumulator、预留接口编译、**W8 边界契约（退化/溢出多边形、零/负/非有限密度、极大速度、1×100 m 薄条、1:1e6 mass ratio、非法输入 death tests）** | `tests/unit/` |
+| L2 组件 | 完整 Step 场景断言（坠落/钳制/销毁/形状附着/接触持久化/动量守恒/反弹高度/多边形叠放/确定性/10 方块 10 s 里程碑/warmFactor 对比/split impulse 能量对比/无宽相 vs BF vs SAP 三路逐位一致/proxy 生命周期/fat AABB 只加候选/**岛屿统计/岛求解 A/B 逐位一致/整岛休眠与 100 步位不变/4 唤醒入口/邻近唤醒/多米诺连锁唤醒**/**W8：生命周期/stale handle/Clear/休眠边界/宽相 churn 逐位一致/islandId+sleepTime+零速度 invariant**） | `tests/unit/test_world_*.cpp` |
 | L3 回归 | **W6 起生效**：`physics2d_regression` 重放固定 600 步场景（`allowSleep=false` 以保持连续动力学），
 量化弱 hash 对比 `golden/default_600.txt`；CTest `regression_default` + CI `regression` job | `tests/regression/` |
 
-当前规模：**354 个 ctest 用例**（debug/sanitize；release 355；其中 15 个 death test 在沙箱内自动 SKIP，
-CI 执行）。W5 新增 17 个 solver 单测 + 6 个 World 稳定性测试；W6 新增 11 个宽相单测 + 8 个 World 宽相
-测试 + 回归工具 1 个 CTest 用例；W7 新增 19 个岛屿/求解模式单测 + 14 个 World 岛屿/休眠测试 +
-testbed 两个 demo（Dominoes/IslandSleep500，smoke 验证）。
+当前规模（v1.0 终版源码）：**debug/sanitize 387 个 ctest 用例、release 390**（多 3 个 release-only
+契约测试）= **386 个 gtest**（其中 **31 个 death test** 在沙箱内自动 SKIP、CI 执行）+ 1 个
+`regression_default`。W5 新增 17 个 solver 单测 + 6 个 World 稳定性测试；W6 新增 11 个宽相单测 +
+8 个 World 宽相测试 + 回归工具 1 个 CTest 用例；W7 新增 19 个岛屿/求解模式单测 + 14 个 World
+岛屿/休眠测试 + testbed 两个 demo；W8 新增 23 个 solver/geometry 边界测试（含 13 个 death test）+
+12 个 Core/World 边界测试（含 3 个 death test、2 个 release-only）+ testbed 帧捕获与 5 个 GIF。
 
 `ctest --preset all` 通过 `gtest_discover_tests` 把每个 TEST 变成独立 ctest 用例；回归工具是普通
 `add_test`（自带 CLI 与退出码语义 0/1/2）。
