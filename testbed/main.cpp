@@ -46,6 +46,23 @@
 //               1/60 s per frame, so N frames == N physics steps regardless of
 //               machine speed. Exit code 2 means "no usable GL environment".
 //   --hidden    create the window with GLFW_VISIBLE=false (used by smoke runs).
+//   --capture-dir DIR   record the deterministic smoke frames as binary PPM (P6) files
+//               in DIR (Week 8: the README GIFs). The framebuffer is read back AFTER
+//               the world and the ImGui panels are drawn and BEFORE glfwSwapBuffers, so
+//               the capture is exactly the finished window frame. Requires --smoke;
+//               default off (no readback cost when the flag is absent).
+//   --capture-every K   capture one frame every K rendered frames (default 1 when
+//               --capture-dir is given). Must not be combined with a non-capture run.
+//   --capture-start N   first rendered frame (1-based) that may be captured (default 1);
+//               lets a recorder skip an intro without reimplementing the smoke loop.
+//   --capture-hide-ui   skip the DebugUI panels while capturing, so the full window is
+//               scene (used for the dominoes GIF: the floating panels would cover the
+//               two ends of the 20 m chain). The simulation state and render path are
+//               unchanged - only the ImGui pass is omitted.
+//   --capture-display OPTS  comma-separated display overrides for the capture, e.g.
+//               "contacts=off,normals=on" (keys: contacts, normals, aabb, axes,
+//               velocities; values on/off). Same switches as the Solver Settings panel;
+//               recording-only convenience so a GIF can show normals without a click.
 //   --help      print usage.
 
 #include "Camera.h"
@@ -74,9 +91,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -131,6 +151,13 @@ struct CommandLineOptions {
     bool helpRequested = false;
     std::string demoName = "FallingBall"; // scene id, matched against Demo::Name()
     std::string broadPhaseName = "Auto";  // resolved to a DebugUI::BroadPhaseMode in RunTestbed
+    // Week 8 GIF recording (all default-off: interactive and plain smoke runs are
+    // unchanged, and no capture code runs unless captureDirectory is non-empty).
+    std::string captureDirectory; // empty = capture disabled
+    int captureFrameInterval = 0; // --capture-every K; 0 = not given (defaults to 1)
+    int captureStartFrame = 0;    // --capture-start N; 0 = not given (defaults to 1)
+    bool captureHideUi = false;   // --capture-hide-ui: scene-only frames
+    std::string captureDisplay;   // --capture-display overrides, e.g. "contacts=off,normals=on"
 };
 
 // The binary name is spelled out instead of using argv[0]: the repository path may
@@ -151,6 +178,13 @@ void PrintUsage() {
                 "  --smoke N   render N frames, print a summary and exit (0 = pass, 2 = no GL environment\n"
                 "              or unknown demo name)\n"
                 "  --hidden    hide the window (rendering still happens)\n"
+                "  --capture-dir DIR  write every captured smoke frame as binary PPM (P6) into DIR\n"
+                "              (requires --smoke; read back after the world + UI are drawn, before swap)\n"
+                "  --capture-every K  capture one frame every K frames (default 1)\n"
+                "  --capture-start N  first 1-based rendered frame to capture (default 1)\n"
+                "  --capture-hide-ui  omit the ImGui panels while capturing (scene-only GIF frames)\n"
+                "  --capture-display OPTS  comma-separated on/off display overrides, e.g.\n"
+                "              contacts=off,normals=on (keys: contacts, normals, aabb, axes, velocities)\n"
                 "  --help      show this help\n");
 }
 
@@ -184,6 +218,52 @@ void PrintUsage() {
                 return false;
             }
             options.broadPhaseName = argv[++argumentIndex];
+        } else if (std::strcmp(argument, "--capture-dir") == 0) {
+            if (argumentIndex + 1 >= argc) {
+                std::fprintf(stderr, "[testbed] --capture-dir requires a directory, e.g. --capture-dir "
+                                     "build/capture/box_stack\n");
+                return false;
+            }
+            options.captureDirectory = argv[++argumentIndex];
+        } else if (std::strcmp(argument, "--capture-every") == 0) {
+            if (argumentIndex + 1 >= argc) {
+                std::fprintf(stderr,
+                             "[testbed] --capture-every requires a frame interval, e.g. --capture-every 8\n");
+                return false;
+            }
+            const char* value = argv[++argumentIndex];
+            char* parseEnd = nullptr;
+            const long interval = std::strtol(value, &parseEnd, 10);
+            if (parseEnd == value || *parseEnd != '\0' || interval <= 0 || interval > 1000000) {
+                std::fprintf(stderr, "[testbed] invalid --capture-every interval: '%s'\n", value);
+                return false;
+            }
+            options.captureFrameInterval = static_cast<int>(interval);
+        } else if (std::strcmp(argument, "--capture-start") == 0) {
+            if (argumentIndex + 1 >= argc) {
+                std::fprintf(
+                    stderr,
+                    "[testbed] --capture-start requires a 1-based frame number, e.g. --capture-start 60\n");
+                return false;
+            }
+            const char* value = argv[++argumentIndex];
+            char* parseEnd = nullptr;
+            const long startFrame = std::strtol(value, &parseEnd, 10);
+            if (parseEnd == value || *parseEnd != '\0' || startFrame < 1 || startFrame > 1000000) {
+                std::fprintf(stderr, "[testbed] invalid --capture-start frame: '%s' (must be >= 1)\n", value);
+                return false;
+            }
+            options.captureStartFrame = static_cast<int>(startFrame);
+        } else if (std::strcmp(argument, "--capture-hide-ui") == 0) {
+            options.captureHideUi = true;
+        } else if (std::strcmp(argument, "--capture-display") == 0) {
+            if (argumentIndex + 1 >= argc) {
+                std::fprintf(stderr,
+                             "[testbed] --capture-display requires a comma-separated override list, e.g. "
+                             "contacts=off,normals=on\n");
+                return false;
+            }
+            options.captureDisplay = argv[++argumentIndex];
         } else if (std::strcmp(argument, "--help") == 0 || std::strcmp(argument, "-h") == 0) {
             options.helpRequested = true;
             return true;
@@ -192,7 +272,95 @@ void PrintUsage() {
             return false;
         }
     }
+    // Capture options only make sense together (and only in the deterministic smoke
+    // loop): rejecting the combinations here keeps the loop free of repeated checks.
+    if (!options.captureDirectory.empty()) {
+        if (options.captureFrameInterval == 0) {
+            options.captureFrameInterval = 1;
+        }
+        if (options.captureStartFrame == 0) {
+            options.captureStartFrame = 1;
+        }
+    } else if (options.captureFrameInterval != 0 || options.captureStartFrame != 0) {
+        std::fprintf(stderr, "[testbed] --capture-every/--capture-start require --capture-dir\n");
+        return false;
+    } else if (options.captureHideUi) {
+        std::fprintf(stderr, "[testbed] --capture-hide-ui requires --capture-dir\n");
+        return false;
+    } else if (!options.captureDisplay.empty()) {
+        std::fprintf(stderr, "[testbed] --capture-display requires --capture-dir\n");
+        return false;
+    }
     return true;
+}
+
+// ---- Week 8: deterministic frame capture for the README GIFs -------------------
+// The demo GIFs must show the exact scene and panel text the smoke run asserts on, so
+// they are recorded from the same fixed-step smoke loop rather than by screen recording
+// a human session. The readback happens before glfwSwapBuffers: at that point GL_BACK
+// holds the finished frame (world + ImGui panels), while after the swap it already
+// belongs to the next frame. Binary PPM (P6) is the intermediate format because Pillow
+// decodes it without an extra dependency (this machine has no ffmpeg) and its header
+// keeps the frame dimensions.
+constexpr int kPpmMaxValue = 255;
+constexpr int kCaptureFileNameDigits = 6;
+
+[[nodiscard]] bool WritePpmFrame(const std::filesystem::path& directory, const std::string& directoryLabel,
+                                 int frameNumber, int width, int height,
+                                 const std::vector<unsigned char>& topDownRgb, std::string& error) {
+    char fileName[40];
+    std::snprintf(fileName, sizeof(fileName), "frame_%0*d.ppm", kCaptureFileNameDigits, frameNumber);
+    // std::filesystem::path (not a char* concatenation) keeps non-ASCII parent paths
+    // (this repository lives under a Chinese directory name) intact on MSVC.
+    const std::filesystem::path filePath = directory / fileName;
+    std::ofstream file(filePath, std::ios::binary);
+    if (!file.is_open()) {
+        error = "cannot open frame " + std::to_string(frameNumber) + " under '" + directoryLabel + "'";
+        return false;
+    }
+    file << "P6\n" << width << ' ' << height << '\n' << kPpmMaxValue << '\n';
+    file.write(reinterpret_cast<const char*>(topDownRgb.data()),
+               static_cast<std::streamsize>(topDownRgb.size()));
+    if (!file.good()) {
+        error = "write failed for frame " + std::to_string(frameNumber) + " under '" + directoryLabel + "'";
+        return false;
+    }
+    return true;
+}
+
+// glReadPixels returns rows bottom-up (the OpenGL origin is bottom-left) while every
+// image file stores them top-down, so the rows are reversed while copying. GL_PACK_ALIGNMENT
+// defaults to 4 and an RGB row of a 1280 px frame is not a multiple of 4 bytes, so the
+// default stride would corrupt every other row; it is set to 1 and restored for the
+// renderer's next frame.
+[[nodiscard]] bool CaptureBackBufferToPpm(const std::filesystem::path& directory,
+                                          const std::string& directoryLabel, int frameNumber, int width,
+                                          int height, std::string& error) {
+    while (glGetError() != GL_NO_ERROR) {
+        // Drain errors left by the render pass so the check below attributes a failure to
+        // glReadPixels itself (some drivers refuse back-buffer reads on hidden windows).
+    }
+    std::vector<unsigned char> pixels(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) *
+                                      3u);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    const GLenum readError = glGetError();
+    if (readError != GL_NO_ERROR) {
+        error = "glReadPixels(GL_BACK) failed with GL error " + std::to_string(static_cast<int>(readError));
+        return false;
+    }
+
+    const std::size_t rowBytes = static_cast<std::size_t>(width) * 3u;
+    std::vector<unsigned char> topDown(pixels.size());
+    for (int row = 0; row < height; ++row) {
+        const std::size_t sourceOffset = static_cast<std::size_t>(height - 1 - row) * rowBytes;
+        const std::size_t destinationOffset = static_cast<std::size_t>(row) * rowBytes;
+        std::copy(pixels.begin() + static_cast<std::ptrdiff_t>(sourceOffset),
+                  pixels.begin() + static_cast<std::ptrdiff_t>(sourceOffset + rowBytes),
+                  topDown.begin() + static_cast<std::ptrdiff_t>(destinationOffset));
+    }
+    return WritePpmFrame(directory, directoryLabel, frameNumber, width, height, topDown, error);
 }
 
 void GlfwErrorCallback(int errorCode, const char* description) {
@@ -260,6 +428,67 @@ void GlfwErrorCallback(int errorCode, const char* description) {
         }
     }
     return -1;
+}
+
+// ---- Week 8: capture-time display overrides ----------------------------------
+// The display toggles normally live in the Solver Settings panel; a recording script
+// cannot click them. This parser accepts the same names as "key=on|off" pairs so a GIF
+// can show contact normals (contact_debug) or hide the many moving contact markers that
+// dominate a 400-body frame's GIF size (sap_stress). Anything unknown is a usage error
+// instead of a silent no-op, because a typo in a recording command must not be hidden.
+[[nodiscard]] bool ApplyDisplayOverrides(const std::string& overrides, p2::DebugUI::DisplayOptions& display) {
+    std::size_t tokenStart = 0;
+    while (tokenStart <= overrides.size()) {
+        const std::size_t comma = overrides.find(',', tokenStart);
+        const std::string token =
+            overrides.substr(tokenStart, comma == std::string::npos ? std::string::npos : comma - tokenStart);
+        if (!token.empty()) {
+            const std::size_t equals = token.find('=');
+            if (equals == std::string::npos) {
+                std::fprintf(stderr, "[testbed] --capture-display entry '%s' is not key=value\n",
+                             token.c_str());
+                return false;
+            }
+            const std::string key = token.substr(0, equals);
+            const std::string value = token.substr(equals + 1);
+            // The scene-name comparator is reused on purpose: it is the project's single
+            // case-folding helper for these loose CLI values (on/ON/On all work).
+            const bool enabled = MatchesSceneName("on", value.c_str()) ||
+                                 MatchesSceneName("true", value.c_str()) || value == "1";
+            const bool disabled = MatchesSceneName("off", value.c_str()) ||
+                                  MatchesSceneName("false", value.c_str()) || value == "0";
+            if (!enabled && !disabled) {
+                std::fprintf(stderr, "[testbed] --capture-display value '%s' must be on/off\n",
+                             value.c_str());
+                return false;
+            }
+            bool* target = nullptr;
+            if (key == "contacts") {
+                target = &display.showContacts;
+            } else if (key == "normals") {
+                target = &display.showNormals;
+            } else if (key == "aabb") {
+                target = &display.showAabb;
+            } else if (key == "axes") {
+                target = &display.showAxes;
+            } else if (key == "velocities") {
+                target = &display.showVelocities;
+            }
+            if (target == nullptr) {
+                std::fprintf(stderr,
+                             "[testbed] --capture-display unknown key '%s' (contacts, normals, aabb, axes, "
+                             "velocities)\n",
+                             key.c_str());
+                return false;
+            }
+            *target = enabled;
+        }
+        if (comma == std::string::npos) {
+            break;
+        }
+        tokenStart = comma + 1;
+    }
+    return true;
 }
 
 // ---- Week 6: broad-phase selection -------------------------------------------
@@ -522,6 +751,34 @@ int RunTestbed(const CommandLineOptions& options) {
     const bool smokeMode = options.smokeFrames > 0;
     const int environmentExitCode = smokeMode ? kExitEnvironmentUnsupported : kExitFailure;
 
+    // Week 8 demo-GIF capture is defined on the deterministic smoke loop (one fixed
+    // 1/60 s step per rendered frame), so it is a usage error without --smoke. The
+    // directory is created before GLFW starts so a bad path fails fast, before any
+    // window/GL state has to be torn down.
+    const bool captureEnabled = !options.captureDirectory.empty();
+    if (captureEnabled) {
+        if (!smokeMode) {
+            std::fprintf(stderr,
+                         "[testbed] --capture-dir requires --smoke N: capture records the deterministic "
+                         "fixed-step frames\n");
+            return kExitFailure;
+        }
+        std::error_code directoryError;
+        std::filesystem::create_directories(options.captureDirectory, directoryError);
+        if (directoryError) {
+            std::fprintf(stderr, "[testbed] cannot create capture directory '%s': %s\n",
+                         options.captureDirectory.c_str(), directoryError.message().c_str());
+            return kExitFailure;
+        }
+        std::printf("[testbed] capture: every %d frame(s) starting at frame %d, PPM (P6) into '%s' "
+                    "(world%s, read back before swap)\n",
+                    options.captureFrameInterval, options.captureStartFrame, options.captureDirectory.c_str(),
+                    options.captureHideUi ? " only, panels hidden" : " + UI");
+    }
+    // Panels are skipped only for capture runs that asked for it; the world render and
+    // the fixed-step simulation are untouched either way.
+    const bool captureHideUi = captureEnabled && options.captureHideUi;
+
     // ---- demo registry + CLI scene selection --------------------------------
     // Built before GLFW/GL: an unknown --demo is a configuration error and must be
     // reported (exit code 2 by contract) even on a machine that cannot open a window.
@@ -649,6 +906,16 @@ int RunTestbed(const CommandLineOptions& options) {
     // uniformly to the initial scene and to every later scene switch.
     p2::DebugUI debugUi;
     p2::DebugUI::DisplayOptions displayOptions;
+    // Week 8: recording-only display overrides, applied once before the first frame (the
+    // same switches the Solver Settings panel writes). captureEnabled is already false
+    // without --capture-dir, so interactive runs keep the panel defaults.
+    if (captureEnabled && !options.captureDisplay.empty()) {
+        if (!ApplyDisplayOverrides(options.captureDisplay, displayOptions)) {
+            std::fprintf(stderr, "[testbed] invalid --capture-display '%s'\n",
+                         options.captureDisplay.c_str());
+            return kExitFailure;
+        }
+    }
     debugUi.SetBroadPhaseMode(broadPhaseMode);
     demos[static_cast<std::size_t>(selectedDemo)]->Setup(world);
     // Week 6: the broad phase is chosen AFTER the scene exists, because Auto dispatches
@@ -666,6 +933,7 @@ int RunTestbed(const CommandLineOptions& options) {
     float smoothedStepMilliseconds = 0.0f;
     int32_t physicsStepsLastFrame = 0;
     int frameIndex = 0;
+    int capturedFrameCount = 0;
     int32_t totalPhysicsSteps = 0;
     double totalFrameMilliseconds = 0.0;
     // Week 7: raw Step time of the previous frame, handed to the demos through
@@ -708,8 +976,11 @@ int RunTestbed(const CommandLineOptions& options) {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         // Full-viewport dockspace; the central node is transparent so the world
-        // render below shows through it while the panels dock at the edges.
-        ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+        // render below shows through it while the panels dock at the edges. Skipped
+        // when --capture-hide-ui removes the panels altogether.
+        if (!captureHideUi) {
+            ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+        }
 
         const ImGuiIO& io = ImGui::GetIO();
         camera.UpdateInput(window, !io.WantCaptureMouse && !io.WantCaptureKeyboard);
@@ -761,8 +1032,9 @@ int RunTestbed(const CommandLineOptions& options) {
             stats.framesPerSecond, stats.physicsStepMilliseconds, previousRawStepMilliseconds});
 
         const p2::DebugUI::FrameActions actions =
-            debugUi.Draw(world, *demos[static_cast<std::size_t>(selectedDemo)], demoNames, selectedDemo,
-                         stats, displayOptions);
+            captureHideUi ? p2::DebugUI::FrameActions{}
+                          : debugUi.Draw(world, *demos[static_cast<std::size_t>(selectedDemo)], demoNames,
+                                         selectedDemo, stats, displayOptions);
         if (actions.quitRequested) {
             break;
         }
@@ -879,6 +1151,23 @@ int RunTestbed(const CommandLineOptions& options) {
         // same framebuffer, cleared once above.
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        // Week 8: read the finished frame back before the swap. frameIndex is 0-based
+        // while the capture contract (and --capture-start) is 1-based, so frame 1 is the
+        // first rendered frame. Nothing in this block runs when capture is disabled.
+        if (captureEnabled) {
+            const int frameNumber = frameIndex + 1;
+            if (frameNumber >= options.captureStartFrame &&
+                (frameNumber - options.captureStartFrame) % options.captureFrameInterval == 0) {
+                std::string captureError;
+                if (!CaptureBackBufferToPpm(options.captureDirectory, options.captureDirectory, frameNumber,
+                                            frameBufferWidth, frameBufferHeight, captureError)) {
+                    std::fprintf(stderr, "[testbed] frame capture failed: %s\n", captureError.c_str());
+                    return kExitFailure;
+                }
+                ++capturedFrameCount;
+            }
+        }
         glfwSwapBuffers(window);
 
         smoothedFrameMilliseconds = smoothedFrameMilliseconds <= 0.0f
@@ -1028,6 +1317,14 @@ int RunTestbed(const CommandLineOptions& options) {
         reportedDemo.PrintSmokeSummary(world);
     } else if (frameIndex > 0) {
         std::printf("[testbed] closed after %d frames, %d physics steps\n", frameIndex, totalPhysicsSteps);
+    }
+
+    // One machine-checkable line for the recording script: count of PPM frames written and
+    // the sampling the run used, so the encoder can cross-check GIF length/rate.
+    if (captureEnabled) {
+        std::printf("[capture] frames=%d every=%d start=%d dir=%s\n", capturedFrameCount,
+                    options.captureFrameInterval, options.captureStartFrame,
+                    options.captureDirectory.c_str());
     }
 
     return kExitSuccess;

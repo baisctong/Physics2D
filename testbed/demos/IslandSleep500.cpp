@@ -152,8 +152,11 @@ void IslandSleep500Demo::WakeAll(World& world) {
 }
 
 void IslandSleep500Demo::Ui(World& world) {
-    ImGui::TextUnformatted("500 boxes in 50 ten-box towers: island sleep performance scene.");
-    ImGui::TextUnformatted("The measured windows are the point: early (awake) vs settled (asleep) Step ms.");
+    // Two short lines instead of one long sentence: the panel is 340 px wide and ImGui
+    // clips (does not wrap) a Text line, so the previous one-liners lost their tail -
+    // including the measured asleep Step time, which is the number this scene exists for.
+    ImGui::TextUnformatted("500 boxes in 100 five-box towers.");
+    ImGui::TextUnformatted("Measured: awake vs asleep Step ms.");
 
     int32_t asleepBoxCount = 0;
     for (const BodyHandle handle : m_boxes) {
@@ -190,8 +193,11 @@ void IslandSleep500Demo::Ui(World& world) {
     if (m_asleepFrameCount > 0 && m_awakeFrameCount > 0) {
         const double awakeAverage = m_awakeStepSum / static_cast<double>(m_awakeFrameCount);
         const double asleepAverage = m_asleepStepSum / static_cast<double>(m_asleepFrameCount);
-        ImGui::Text("Sleeping speedup: %.2fx (awake %.4f ms -> asleep %.4f ms)", awakeAverage / asleepAverage,
-                    awakeAverage, asleepAverage);
+        // One compact line: the 340 px panel clips (does not wrap) long Text lines, and the
+        // asleep Step time is the number this scene exists for. "awake -> asleep ms" keeps
+        // both windows readable in the width that is left after the label.
+        ImGui::Text("Speedup: %.2fx (%.4f -> %.4f ms)", awakeAverage / asleepAverage, awakeAverage,
+                    asleepAverage);
     } else {
         ImGui::TextDisabled("Asleep window not reached yet (sleeping may be disabled or not settled).");
     }
@@ -204,8 +210,8 @@ void IslandSleep500Demo::Ui(World& world) {
     if (ImGui::Button("Reset")) {
         Reset(world);
     }
+    ImGui::SameLine();
     ImGui::Text("Resets: %d", m_resetCount);
-    ImGui::TextDisabled("Switch sleeping/island solving live in Solver Settings (Week 7 section).");
 }
 
 void IslandSleep500Demo::Reset(World& world) {

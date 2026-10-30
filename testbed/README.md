@@ -20,6 +20,13 @@ awake / sleeping in the Status panel, `enableSleeping` / `useIslandSolving` /
 "Wake all bodies" in Solver Settings, keyboard playback shortcuts (Space, `.`,
 1/2/3) and the full **Contacts** inspector detail (normal arrow, contact points,
 per-point accumulated impulses with bars and Coulomb-cone usage).
+**Week 8** adds deterministic **frame capture** for the README GIFs
+(`--capture-dir/--capture-every/--capture-start`, plus the recording helpers
+`--capture-hide-ui` and `--capture-display`): the smoke loop reads the finished
+framebuffer back as PPM after drawing the world and the ImGui panels and before
+`glfwSwapBuffers`, so a GIF can never disagree with the scene the smoke test asserts
+on. `scripts/record_gifs.ps1` records and encodes the five `docs/images/*.gif`
+files with Pillow (no ffmpeg); the walkthrough is [`docs/demos.md`](../docs/demos.md).
 
 > Layer rule: this directory is the only place allowed to include GLFW / OpenGL /
 > Dear ImGui. `physics2d_core` stays headless (see `docs/architecture.md`).
@@ -54,6 +61,17 @@ build/debug/testbed/physics2d_testbed.exe --demo StressBenchmark --smoke 300 --h
 build/debug/testbed/physics2d_testbed.exe --demo StressBenchmark --broadphase sap --smoke 300 --hidden
 build/debug/testbed/physics2d_testbed.exe --demo StressBenchmark --broadphase bf --smoke 300 --hidden
 build/debug/testbed/physics2d_testbed.exe --demo StressBenchmark --broadphase none --smoke 300 --hidden
+
+# Week 8 frame capture (writes frame_000123.ppm; requires --smoke; see the capture section)
+build/debug/testbed/physics2d_testbed.exe --demo IslandSleep500 --smoke 601 --hidden `
+    --capture-dir build/capture/still --capture-every 1000 --capture-start 400
+build/debug/testbed/physics2d_testbed.exe --demo Dominoes --smoke 700 --hidden `
+    --capture-dir build/capture/dominoes --capture-every 7 --capture-start 20 --capture-hide-ui
+build/debug/testbed/physics2d_testbed.exe --demo BoxStack --smoke 300 --hidden `
+    --capture-dir build/capture/contact --capture-every 4 --capture-display normals=on
+
+# or record/encode all README GIFs in one command (Pillow, no ffmpeg)
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/record_gifs.ps1
 ```
 
 `--demo NAME` accepts `FallingBall`, `SphereStack`, `BoxStack`, `FrictionRamp`,
@@ -68,7 +86,8 @@ or `SAP` (same loose matching). An unknown value is a usage error (exit **1**).
 2 if no usable OpenGL 3.3 environment exists); `--smoke N` feeds the fixed-step
 accumulator exactly `1/60 s` per frame, so `frames == physics_steps` is
 deterministic and independent of machine speed and of the camera (auto-framing
-never touches the simulation).
+never touches the simulation). Week 8 recording flags are documented in the
+[capture section](#frame-capture-for-the-readme-gifs-week-8) below.
 
 Output of a successful smoke run (observed on the dev machine; timings vary per
 machine):
@@ -101,6 +120,37 @@ fields `broadphase=<installed Name()>` `candidate_pairs=<N>` `proxies=<N>`, and
 actually used (including the Week 7 `enable_sleeping` / `use_island_solving`
 flags); the per-body / per-contact lines carry final positions, velocities, tilt
 angles and the accumulated normal/tangent impulses.
+
+## Frame capture for the README GIFs (Week 8)
+
+The testbed records its own frame sequence from the deterministic smoke loop, so a
+README GIF can never drift from the scene the smoke test asserts on - no screen-capture
+tool, no window cropping, no physics-parameter changes.
+
+| Flag | Meaning |
+| --- | --- |
+| `--capture-dir DIR` | enable capture: after the world **and** the ImGui panels are drawn and **before** `glfwSwapBuffers`, read the back buffer with `glReadPixels(GL_BACK, GL_RGB)`, flip it (GL rows are bottom-up) and write `frame_000123.ppm` (binary PPM/P6, 1-based frame number). Requires `--smoke N`; the directory is created if missing. Default off = no readback cost. |
+| `--capture-every K` | capture one frame every K rendered frames (default 1 when `--capture-dir` is given). |
+| `--capture-start N` | first 1-based rendered frame to capture (default 1), so a recording can skip the intro. |
+| `--capture-hide-ui` | skip the DebugUI panels while capturing (scene-only frames; the floating panels would cover the two ends of the 20 m domino chain). |
+| `--capture-display OPTS` | comma-separated display overrides `key=on/off` for `contacts`, `normals`, `aabb`, `axes`, `velocities` - the same switches as Solver Settings -> Display. Used to hide the many moving contact markers in the 400-body SAP GIF and to show contact normals in the contact-debug GIF. |
+
+A capture run prints one extra machine-checkable line at the end:
+
+```text
+[capture] frames=98 every=7 start=20 dir=build/capture/dominoes
+```
+
+Why the readback happens before the swap, and why `GL_PACK_ALIGNMENT` is set to 1:
+`CaptureBackBufferToPpm` in `main.cpp` is the source of truth (GL rows are bottom-up;
+an RGB row of a 1280 px frame is not 4-byte aligned). PPM is 3 bytes per pixel at
+1280x800 (~3.07 MB per frame), so sequences are written under the gitignored
+`build/capture/` and the recording script deletes them after encoding.
+
+`scripts/record_gifs.ps1` wraps capture + Pillow encoding into one reproducible command
+(downscale/palette settings, per-GIF smoke sampling window and the size-budget checks
+live there). The GIF list, the recorded sampling parameters and the reproduction steps
+are in [`docs/demos.md`](../docs/demos.md).
 
 ## Islands & sleeping (Week 7)
 
@@ -321,7 +371,7 @@ remain the discoverable path.
 
 | File | Responsibility |
 | --- | --- |
-| `main.cpp` | Window/GL/ImGui lifecycle, CLI (`--demo`, `--broadphase`, `--smoke`, `--hidden`), demo registry, fixed-timestep loop, keyboard shortcuts, engine-level overlays (contacts incl. highlight, axes, fat AABBs, velocity arrows), material-default application, broad-phase policy after scene builds, auto camera framing, smoke summary (incl. island/sleep fields and per-demo summary hook) |
+| `main.cpp` | Window/GL/ImGui lifecycle, CLI (`--demo`, `--broadphase`, `--smoke`, `--hidden`, Week 8 `--capture-*`), demo registry, fixed-timestep loop, keyboard shortcuts, engine-level overlays (contacts incl. highlight, axes, fat AABBs, velocity arrows), material-default application, broad-phase policy after scene builds, auto camera framing, deterministic frame capture to PPM, smoke summary (incl. island/sleep fields and per-demo summary hook) |
 | `GLLoader.h` | Minimal OpenGL 3.3 core loader (`glfwGetProcAddress`, no glad/glew) |
 | `Renderer.*` | One dynamic VBO + GL_LINES batch: circles, polygons, AABBs, arrows, points, axes |
 | `Camera.*` | World <-> screen mapping, `kPixelsPerMeter = 40`, pan/zoom/reset, column-major MVP, `FocusOnWorld` auto-framing |
