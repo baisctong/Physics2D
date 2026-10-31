@@ -95,6 +95,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset de
 | clean 构建耗时 | debug **50.1 s** / release **53.6 s** / sanitize(ASan) **86.0 s**（含依赖下载/编译） |
 | 测试 exe 工作区外运行 | **386/386 gtest 全过**（31 个 death test 真正执行；这是发现契约回归的唯一可靠尺子） |
 | 格式 | `scripts/format.ps1 -Check` → **117 个 C++ 文件 OK**（CI 有 clang-format job） |
+| 远端 CI | **GitHub Actions 9/9 全绿**（run `41174523124`，2026-10-31；Ubuntu/Windows debug+release、ASan+UBSan、headless、regression、format、layering） |
 
 八个 demo 冒烟（**v1.0 canonical debug 实测**；`islands/awake/sleeping` 为 World 统计）：
 

@@ -795,7 +795,8 @@
   regression 的 build=缺 include）。
 - 修复 commit `0dccdf3` 后第二次 run `41174026594`：configure/build 全部通过，Linux 只剩
   `regression_default`（跨 toolchain hash）；MSVC/Linux 其他所有测试全绿。
-- 拆 toolchain golden 后第三次 run：见 GitHub Actions（本文在确认全绿后更新）。
+- 拆 toolchain golden 后第三次 run `41174523124`（sha `a30db2e`）：**9/9 全绿**（Ubuntu/Windows
+  debug+release、ASan+UBSan、headless、determinism regression、clang-format、layering）。
 
 **给未来的提醒**
 1. 发布到 GitHub 前，先把"本地验证基线"当成必要条件而非充分条件：至少让 CI 在一个非本地编译器上

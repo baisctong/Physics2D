@@ -20,7 +20,7 @@
 | remote | ✅ 已添加 | `origin = https://github.com/baisctong/Physics2D.git` |
 | 推送 main + tags | ✅ **已完成** | 2026-10-31 推送；=`main`/`origin/main`、8 个 tag（含 v1.0-release）全部在远端 |
 | GitHub Release / About / topics | ✅ 已完成 | Release `v1.0-release`（正文含 4 张 GIF）；About description + 13 个 topics 已经 GitHub API 设置 |
-| CI 首跑 | ✅ 已跑通并修复 | 首跑 9 条检查 4 绿 5 红（GCC 可移植性 + GLFW Wayland + 跨 toolchain golden）；修复后全绿，见 §5 |
+| CI 首跑 | ✅ 已全绿 | 首跑 9 条 4 绿 5 红（GCC include、GLFW Wayland、跨 toolchain golden）；两次修复后 **run `41174523124` 9/9 全绿**，见 §5 |
 
 ## 1. Git 身份（已完成，保留命令供参考）
 
@@ -125,6 +125,10 @@ windows debug/release；红的是所有 Linux job。日志显示两个"本地 MS
 > 经验：**远端 CI 是本地 MSVC 之外的第二把尺子**。首推前不要对"全绿"打包票——本文档 §5 的风险清单
 > 全部兑现了；修复本身也是很好的面试素材（"我的项目第一次跨平台 CI 就抓到了 MSVC-only 的 include
 > 依赖和 FP 可移植性假设"）。
+>
+> **最终状态（2026-10-31）**：修复后第三次 run **`41174523124`（sha `a30db2e`）9/9 全绿**——
+> Ubuntu/Windows debug+release、ASan+UBSan、headless、determinism regression、clang-format、layering
+> 全部通过；README 的 CI/Release badge 已生效。
 ## 6. 发布前最后自检（本次已全部通过）
 
 ```powershell
