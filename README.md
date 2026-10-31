@@ -2,6 +2,9 @@
 
 > English version: [README.en.md](README.en.md)
 
+[![CI](https://github.com/baisctong/Physics2D/actions/workflows/ci.yml/badge.svg)](https://github.com/baisctong/Physics2D/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/baisctong/Physics2D?label=release)](https://github.com/baisctong/Physics2D/releases)
+
 > 一个用于校招简历与面试深挖的 C++20 项目：从零实现
 > **宽相 → 窄相 → 接触流形 → Sequential Impulse 求解 → 岛屿 / 休眠** 的完整物理链路，
 > 物理核心零第三方依赖、可 headless 运行、有真实量化数据与确定性回归。

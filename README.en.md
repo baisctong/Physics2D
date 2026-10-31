@@ -2,6 +2,9 @@
 
 > Chinese version: [README.md](README.md)
 
+[![CI](https://github.com/baisctong/Physics2D/actions/workflows/ci.yml/badge.svg)](https://github.com/baisctong/Physics2D/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/baisctong/Physics2D?label=release)](https://github.com/baisctong/Physics2D/releases)
+
 > A C++20 project built for new-grad resumes and deep interview discussion: it implements the
 > complete physics pipeline **broad phase → narrow phase → contact manifold → Sequential Impulse
 > solving → islands / sleeping** from scratch. The physics core has zero third-party dependencies,
