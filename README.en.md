@@ -5,10 +5,10 @@
 [![CI](https://github.com/baisctong/Physics2D/actions/workflows/ci.yml/badge.svg)](https://github.com/baisctong/Physics2D/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/baisctong/Physics2D?label=release)](https://github.com/baisctong/Physics2D/releases)
 
-> A C++20 project built for new-grad resumes and deep interview discussion: it implements the
-> complete physics pipeline **broad phase → narrow phase → contact manifold → Sequential Impulse
-> solving → islands / sleeping** from scratch. The physics core has zero third-party dependencies,
-> runs headless, and ships with measured numbers and deterministic regression.
+> A C++20 2D rigid-body physics engine written from scratch: it implements the complete physics
+> pipeline **broad phase → narrow phase → contact manifold → Sequential Impulse solving →
+> islands / sleeping**. The physics core has zero third-party dependencies, runs headless, and
+> ships with measured numbers and deterministic regression.
 
 **v1.0-release (Weeks 1-8 complete)**: math library; Body/World integration skeleton; shape system
 and analytic collision; **convex-polygon SAT + clipping-based manifold + SATCache**;
@@ -31,6 +31,32 @@ an **interactive testbed with 8 demos**; **boundary-contract tests** and complet
 > `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/record_gifs.ps1`.
 > Recording parameters, panel tour and demo watch-points: [`docs/demos.md`](docs/demos.md).
 
+## 🤖 How this project was built with DeepSeek
+
+> The project was **designed and delivered end-to-end with DeepSeek** — the development process
+> itself is an experiment in human-led, AI-executed engineering.
+
+- **The human owns "what to build and how to accept it"**: positioning, the 8-week plan, per-week
+  Definition of Done, reserved interfaces, sign/layering rules, scope red lines and every acceptance
+  criterion were written down first as a design document + [`AGENTS.md`](AGENTS.md) (the "project
+  constitution" the AI must follow). Test expectations are adjudicated by hand; the AI is not
+  allowed to loosen a test to make it green.
+- **DeepSeek runs the implementation/verification loop**: each week the design document becomes task
+  cards executed by DeepSeek coding agents — writing code and tests, building, reading logs, fixing
+  until green. The W8 docs, deterministic GIF-capture tool and CI fixes were also produced this way.
+  The multi-agent workflow (Lead + solver / core / testbed / docs roles, isolated build directories,
+  per-task write scopes) is documented in [`HANDOFF.md`](HANDOFF.md) and `AGENTS.md`.
+- **Quality is measured, not claimed**: every round ends with canonical three-preset test runs
+  (v1.0: **387 / 390 / 387**), 8 demo smoke runs, broad-phase A/B, the regression hash, death tests
+  outside the sandbox and GitHub Actions **9/9**. Every number in this README is reproducible with
+  the commands in the repo.
+- **The AI hit real walls, and they are recorded honestly**: warm-start factor measurements,
+  thin-slab sleep failure, a misplaced proximity wake, a `-0.0` bit-level bug, and the first Linux
+  CI finding MSVC-only include dependencies and a cross-toolchain hash difference — all written up in
+  [`docs/devlog.md`](docs/devlog.md).
+- **Conclusion**: AI assistance is not "generate and ship". Given a verifiable engineering loop
+  (design docs + task cards + automated tests + data reviews), AI output can reach delivery quality;
+  the AI provides speed, the human keeps judgement.
 ## ✨ Features
 
 - **Complete physics pipeline, no third-party physics library**: four layers
@@ -291,15 +317,14 @@ scripts/                                          # bootstrap / build / format /
 | Document | Content |
 | --- | --- |
 | [`docs/architecture.md`](docs/architecture.md) | module dependencies, data layout, Step 11-phase timing, island/sleep state machine, broad-phase/narrow-phase/solver data flow (with a Mermaid overview) |
-| [`docs/math.md`](docs/math.md) | full derivations of SAT/impulses/friction cone/warm starting/split impulse/island sleeping + interview follow-ups |
+| [`docs/math.md`](docs/math.md) | full derivations of SAT/impulses/friction cone/warm starting/split impulse/island sleeping + implementation cross-reference |
 | [`docs/profiling.md`](docs/profiling.md) | all measured performance tables (broad phase/sleeping/three solving modes/build time) + environment and measurement discipline |
 | [`docs/boundary-contracts.md`](docs/boundary-contracts.md) | boundary-scenario contract table (asserts/return values/documented limits) and known limitations |
 | [`docs/demos.md`](docs/demos.md) | 8 demo descriptions, controls, panel explanations, GIF recording commands |
 | [`docs/testing.md`](docs/testing.md) | manual test guide: 30-second version / full acceptance / 10-minute manual acceptance script / smoke / bench / regression / death tests |
-| [`docs/devlog.md`](docs/devlog.md) | weekly reports (done / stuck / data / next / reminders) — interview material |
+| [`docs/devlog.md`](docs/devlog.md) | weekly reports (done / stuck / data / next / reminders) — every blocker and fix is recorded |
 | [`docs/dev-interfaces.md`](docs/dev-interfaces.md) | 18 reserved-interface statuses, deviation registry, invariants that must not break |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | 8-week plan and per-week acceptance records |
-| [`docs/resume-interview.md`](docs/resume-interview.md) | resume bullets (with measured numbers), 25 interview questions, 20-minute walkthrough script |
 | [`docs/release-notes-v1.0.md`](docs/release-notes-v1.0.md) | v1.0-release notes (highlights / boundaries / verification checklist) |
 | [`README.md`](README.md) | Chinese version of this README |
 | [`HANDOFF.md`](HANDOFF.md) | session handoff: current state, verification baseline, red lines and pitfalls |
@@ -359,7 +384,7 @@ scripts/                                          # bootstrap / build / format /
 | W5 | Friction/warm starting/split impulse + **10-box stack stable for 10 s** | ✅ |
 | W6 | BruteForce + SAP + **7.70x on 2000 bodies** + bench + headless regression | ✅ |
 | W7 | Island partition/per-island solving + **whole-island sleeping (1.7x)** + Dominoes/IslandSleep500 | ✅ |
-| W8 | Architecture/math/profiling/README+GIFs/boundary contracts/resume+interview + **v1.0-release** | ✅ |
+| W8 | Architecture/math/profiling/README+GIFs/boundary contracts + **v1.0-release** | ✅ |
 
 **v1.1+ (by priority)**:
 

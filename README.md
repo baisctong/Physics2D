@@ -5,8 +5,8 @@
 [![CI](https://github.com/baisctong/Physics2D/actions/workflows/ci.yml/badge.svg)](https://github.com/baisctong/Physics2D/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/baisctong/Physics2D?label=release)](https://github.com/baisctong/Physics2D/releases)
 
-> 一个用于校招简历与面试深挖的 C++20 项目：从零实现
-> **宽相 → 窄相 → 接触流形 → Sequential Impulse 求解 → 岛屿 / 休眠** 的完整物理链路，
+> 一个从零手写的 C++20 2D 刚体物理引擎：完整实现
+> **宽相 → 窄相 → 接触流形 → Sequential Impulse 求解 → 岛屿 / 休眠** 的物理链路，
 > 物理核心零第三方依赖、可 headless 运行、有真实量化数据与确定性回归。
 
 **v1.0-release（Week 1-8 全部完成）**：数学库、Body/World 积分骨架、形状系统 + 解析碰撞、
@@ -26,6 +26,26 @@
 > GIF 由 testbed 的帧捕获模式（`--capture-dir`，Week 8 新增）确定性录制，一条命令可复现：
 > `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/record_gifs.ps1`。
 > 录制参数、面板说明与 8 个 demo 的看点见 [`docs/demos.md`](docs/demos.md)。
+
+## 🤖 关于这个项目与 DeepSeek 的协作
+
+> 本项目**从设计到交付全程借助 DeepSeek（深度求索）完成**——开发过程本身也是一次"人类主导 + AI 执行"的工程实验。
+
+- **人类负责"做什么、怎么验收"**：项目定位、8 周计划、每周 DoD、接口预留、符号约定 / 分层铁律 /
+  范围红线、每阶段验收标准，先写成设计文档与 [`AGENTS.md`](AGENTS.md)（相当于给 AI 的项目宪法）；
+  所有测试期望值由人裁决，AI 不允许自行"调绿"。
+- **DeepSeek 负责"实现与验证循环"**：按周把设计文档拆成任务卡，由 DeepSeek 编码 agent 执行——
+  写代码、写测试、跑构建、读日志、修到绿为止；W8 的文档、GIF 录制工具、CI 修复也由它完成。
+  多 agent 协作方式（Lead + solver / core / testbed / docs 四个角色、独立 build 目录、任务写作用域）
+  记录在 [`HANDOFF.md`](HANDOFF.md) 与 `AGENTS.md`。
+- **质量不是"AI 说的"，是测出来的**：每轮结束都跑 canonical 三 preset 全量测试（v1.0：
+  **387 / 390 / 387**）、8 个 demo smoke、宽相 A/B、回归 hash、工作区外 death tests、
+  GitHub Actions **9/9**；本 README 里的每个数字都能用仓库里的命令复现。
+- **AI 也踩坑，而且坑被如实记录**：开发中的真实卡点（warm start factor 实测、薄片难入睡、
+  proximity wake 位置错误、`-0.0` 位级 bug、首次 Linux CI 抓到的 MSVC-only include 依赖与
+  跨 toolchain hash 差异等）都写进了 [`docs/devlog.md`](docs/devlog.md)。
+- **结论**：AI 辅助 ≠ "生成即完成"。给 AI 一个可验证的工程闭环（设计文档 + 任务卡 + 自动测试 +
+  数据复盘），它的产出才能达到可交付质量；AI 负责提速，判断与取舍仍由人把关。
 
 ## ✨ 特性
 
@@ -246,15 +266,14 @@ scripts/                                          # bootstrap / build / format /
 | 文档 | 内容 |
 | --- | --- |
 | [`docs/architecture.md`](docs/architecture.md) | 模块依赖、数据布局、Step 11 阶段时序、岛屿/休眠状态机、宽相/窄相/求解数据流（含 Mermaid 总图） |
-| [`docs/math.md`](docs/math.md) | SAT/冲量/摩擦锥/warm starting/split impulse/岛屿休眠的完整推导 + 面试追问 |
+| [`docs/math.md`](docs/math.md) | SAT/冲量/摩擦锥/warm starting/split impulse/岛屿休眠的完整推导 + 关键实现对照 |
 | [`docs/profiling.md`](docs/profiling.md) | 全部实测性能表（宽相/休眠/三求解模式/构建耗时）+ 测量环境与纪律 |
 | [`docs/boundary-contracts.md`](docs/boundary-contracts.md) | 边界场景的契约表（assert/返回值/文档化限制）与已知限制 |
 | [`docs/demos.md`](docs/demos.md) | 8 个 demo 说明、操作键、Panel 说明、GIF 录制命令 |
 | [`docs/testing.md`](docs/testing.md) | 手动测试指南：30 秒版 / 全量验收 / 10 分钟人工验收脚本 / smoke / bench / 回归 / death tests |
-| [`docs/devlog.md`](docs/devlog.md) | 每周周报（完成/卡住/数据/下周/提醒）——面试素材来源 |
+| [`docs/devlog.md`](docs/devlog.md) | 每周周报（完成/卡住/数据/下周/提醒）——包含所有卡点与修复复盘 |
 | [`docs/dev-interfaces.md`](docs/dev-interfaces.md) | 18 条预留接口状态、偏差登记、不可破坏的不变量 |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | 8 周计划与每周验收记录 |
-| [`docs/resume-interview.md`](docs/resume-interview.md) | 简历 bullet（带实测数字）、25 问面试库、20 分钟讲解脚本 |
 | [`docs/release-notes-v1.0.md`](docs/release-notes-v1.0.md) | v1.0-release 发布说明（亮点/边界/验证清单） |
 | [`README.en.md`](README.en.md) | English version of this README |
 | [`HANDOFF.md`](HANDOFF.md) | 换会话交接：现状、验证基线、红线与坑 |
@@ -302,7 +321,7 @@ scripts/                                          # bootstrap / build / format /
 | W5 | 摩擦/warm starting/split impulse + **10 方块堆叠 10 s 稳定** | ✅ |
 | W6 | BruteForce + SAP + **2000 物体 7.70x** + bench + headless 回归 | ✅ |
 | W7 | 岛屿分区/按岛求解 + **整岛休眠（1.7x）** + Dominoes/IslandSleep500 | ✅ |
-| W8 | 架构图/math/profiling/README+GIF/边界契约/简历面试 + **v1.0-release** | ✅ |
+| W8 | 架构图/math/profiling/README+GIF/边界契约 + **v1.0-release** | ✅ |
 
 **v1.1+（按优先级）**：
 
