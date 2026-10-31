@@ -226,8 +226,10 @@ ctest --preset vs2022-debug
   必须同步释放；无 shape 的 body 没有 proxy。
 - **fat AABB 只加候选**：`Synchronize` 写 tight + `kAabbMargin`；漏检先查 pair 规范化/时序，不要调大 margin。
 - **`ValidateInternalState` 是契约**：SAP 任意时刻（增删/移动后）都必须 true。
-- **回归 hash 纪律**：`tests/regression/golden/default_600.txt` 只在**有意的物理/场景变更**时更新，
-  devlog 写 old/new 与原因；纯重构（宽相切换、BodySim 拆分、排序优化）hash 不变。
+- **回归 hash 纪律**：golden 按 toolchain 维护（MSVC `default_600.txt`；
+  GCC/Clang+libstdc++ `default_600_gcc.txt`），只在**有意的物理/场景变更或 toolchain 升级**时更新，
+  devlog 写 old/new + toolchain 与原因；**同一 toolchain 内**纯重构（宽相切换、BodySim 拆分、
+  排序优化）hash 不变。跨 toolchain 逐位一致不保证（首次远端 Linux CI 实测差异）。
 - 不变量清单见 `docs/dev-interfaces.md` 第 6 节。
 
 ### W5 的求解器约定（改求解器前必读）

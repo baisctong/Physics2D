@@ -4,7 +4,7 @@
 > Manifold → Sequential Impulse（摩擦锥/warm starting/split impulse）→ 岛屿/整岛休眠）、可交互
 > testbed（8 demo + 帧捕获 GIF）、完整文档（架构/数学/性能/边界契约/演示/简历面试）、确定性回归与
 > 边界契约测试全部交付。**canonical clean 验收：debug 387 / release 390 / sanitize 387 个 ctest
-> 全绿、0 项目警告、回归弱 hash `588d30e70f9b4ddd` 不变、8 demo smoke 全 exit 0、宽相 A/B
+> 全绿、0 项目警告、回归弱 hash（MSVC `588d30e70f9b4ddd` / GCC·Linux `001d846118f05125`，同一 toolchain 内）不变、8 demo smoke 全 exit 0、宽相 A/B
 > SHA-256 三路相同、工作区外 386/386 gtest（31 death test 真跑）**。
 > **下一步**：v1.1（首位：2 点接触 2×2 block solver；其余 Tracy/插值/冷热拆分/多场景回归/岛屿并行）。
 >
@@ -126,7 +126,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset de
 
 ```powershell
 .\build\debug\tests\physics2d_regression.exe --check tests\regression\golden\default_600.txt
-# 期望：hash=588d30e70f9b4ddd（quantum 1e-5）、exact=f4390ef86c075a04、exit 0；
+# 期望（MSVC）：hash=588d30e70f9b4ddd（quantum 1e-5）、exact=f4390ef86c075a04、exit 0；
 # mismatch exit 1；文件/参数错误 exit 2
 ```
 
@@ -254,7 +254,7 @@ docs/  scripts/                       W8 新增 docs/images/*.gif、scripts/reco
   更新/窄相/warm start/速度与位置求解；`WakeIslandOfBody` 整岛唤醒；proximity wake 必须在
   `UpdateContacts` 共享 pass（不要放 `UpdateBroadPhase`——那里无宽相会提前 return）。
 - **阈值不调**：入睡慢是收敛质量（残余抖动）问题，正解是 2 点接触 block solver（v1.1 首位）。
-- **回归 hash 纪律**：`588d30e70f9b4ddd` 只在有意的物理/场景变更时更新，devlog 写 old/new 与原因；
+- **回归 hash 纪律**：golden 按 toolchain 维护（MSVC `588d30e70f9b4ddd`、GCC/Linux `001d846118f05125`）；只在有意的物理/场景变更或 toolchain 升级时更新，devlog 写 old/new + toolchain 与原因；
   纯重构/优化（宽相切换、Tracy 埋点、渲染插值、冷热拆分）hash 必须不变。
 - **文档数字纪律（W8 起）**：`docs/profiling.md` §1.5 是性能数字的单一事实来源（canonical 复测）；
   所有"当前"数字必须来自那里并标注口径；历史周数据只留在 devlog/ROADMAP 的周记录里。
@@ -482,7 +482,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/record_gifs.ps1
 > 同目录 `AGENTS.md`、`docs/ROADMAP.md`、`docs/dev-interfaces.md`、`docs/testing.md`、
 > `docs/profiling.md`、`docs/boundary-contracts.md`，
 > 再按 `HANDOFF.md` §2 跑验证基线（预期 debug 387 / release 390 / sanitize 387 个 ctest 全绿、
-> 0 警告、8 个 smoke 全 exit 0、回归 hash `588d30e70f9b4ddd`、工作区外 386/386 gtest）。
+> 0 警告、8 个 smoke 全 exit 0、回归 hash 按 toolchain（MSVC `588d30e70f9b4ddd` / GCC `001d846118f05125`）、工作区外 386/386 gtest）。
 > 当前 v1.0-release 已完成，**物理与公共 API 冻结**；下一轮 v1.1 按 `HANDOFF.md` §5 的优先级执行，
 > 首位是 **2 点接触 2×2 block solver**（会改回归 hash，需 golden old/new + 全量复测）。
 > 严格遵守 `HANDOFF.md` §6 的"不该做的"、以 `docs/profiling.md` §1.5 为性能数字唯一来源，
@@ -497,7 +497,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/record_gifs.ps1
       （31 个 sandbox death-test SKIP）；clean 构建 50.1 / 53.6 / 86.0 s
 - [x] 工作区外 gtest **386/386 全过**（31 个 death test 真正执行）
 - [x] 八个 demo smoke 全 exit 0，数据已记入 §2（canonical debug）
-- [x] 回归弱 hash **`588d30e70f9b4ddd` 不变**、exit 0；宽相 A/B 三场景 SHA-256 三路相同
+- [x] 回归弱 hash **`588d30e70f9b4ddd`（MSVC）/ `001d846118f05125`（GCC·Linux）** 不变、exit 0；宽相 A/B 三场景 SHA-256 三路相同
 - [x] `scripts/format.ps1 -Check` 117 文件 OK；CI 新增 clang-format job
 - [x] 文档：`docs/math.md`、`docs/profiling.md`、`docs/boundary-contracts.md`、`docs/demos.md`、
       `docs/resume-interview.md`、`docs/release-notes-v1.0.md`、README v1.0 + `README.en.md` 全部落盘，

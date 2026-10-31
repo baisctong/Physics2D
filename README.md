@@ -211,9 +211,11 @@ release **53.6 s** / sanitize(ASan) **86.0 s**。测试规模与三 preset 结�
   （多 3 个 release-only 契约测试）；= 386 个 gtest 用例（其中 31 个 death test 在沙箱内自动 SKIP、
   CI 执行）+ 1 个 `regression_default` 回归用例。三 preset 全绿、MSVC `/W4 /permissive-`
   **0 项目警告**。测试 exe 复制到工作区外运行 → **386/386 gtest 全过**（31 个 death test 真正执行）。
-- **确定性回归**：`physics2d_regression` 重放固定 600 步场景，量化弱 hash（quantum 1e-5）
-  **`588d30e70f9b4ddd`** 与 golden 一致（CTest `regression_default` + CI job）；退出码 0 匹配 /
-  1 不匹配 / 2 用法或 IO 错误。纯重构（宽相切换、岛屿分组）hash 必须不变。
+- **确定性回归**：`physics2d_regression` 重放固定 600 步场景，量化弱 hash（quantum 1e-5）与
+  **按 toolchain 维护的 golden** 一致（CTest `regression_default` + CI job；MSVC
+  `588d30e70f9b4ddd`、GCC/Linux `001d846118f05125`）；退出码 0 匹配 / 1 不匹配 / 2 用法或 IO 错误。
+  **同一 toolchain 内**纯重构（宽相切换、岛屿分组）hash 必须不变；跨 toolchain 逐位一致不保证
+  （首次 Linux CI 实测差异，见 [`tests/regression/README.md`](tests/regression/README.md)）。
 - **等价性证据（优化不改物理）**：
   - 同一场景 无宽相 / BruteForce / SAP 300 步**逐帧 545 floats 逐位一致**（body 状态 + 接触列表含累计冲量）；
     运行中切换宽相 150 步与参照 World 逐位一致；

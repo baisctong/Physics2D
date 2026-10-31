@@ -151,7 +151,7 @@
 - **bench 真实数字**（Release / seed 42 / 1000 帧）：N=50/200/500/2000 → BruteForce 0.0033/0.0838/
   0.5399/9.0985 ms/帧，SAP 0.0015/0.0169/0.0916/1.1656 ms/帧，**加速比 2.20x/4.96x/5.89x/7.81x**；
   小 N 交叉 N≈25–32（SAP 在 N=20 是 0.80x）；testbed Auto 阈值取 32。
-- **headless 回归**：`physics2d_regression` 600 步弱 hash `588d30e70f9b4ddd`（quantum 1e-5）+
+- **headless 回归**：`physics2d_regression` 600 步弱 hash `588d30e70f9b4ddd`（MSVC，quantum 1e-5；GCC/Linux 后续实测为 `001d846118f05125`）+
   golden + CTest `regression_default` + CI `regression` job；退出码 0/1/2 实测正确。
 - **demo**：新增 Pyramid200（完美金字塔，默认 16 层=136 盒，4–24 可调；20 层=210 盒在 8 迭代下底部
   下沉 0.44m 的实测数据已记录）与 StressBenchmark（400 随机盒）；DebugUI Broad phase 下拉
@@ -243,7 +243,7 @@ W7 实测"岛内打包"在 400 体规模反而更慢，说明该规模下 body �
   **50.1 s / 53.6 s / 86.0 s**；工作区外 gtest **386/386 全过**（31 个 death test 真正执行）。
 - **交付门证据**：8 个 demo smoke 全 exit 0（FallingBall 5.057mm、BoxStack 3.893mm、Pyramid200 41.863mm、
   StressBenchmark 170.739mm、Dominoes 20/20、IslandSleep500 100 岛/500 睡 3.983mm）；宽相 A/B 三场景
-  body+contact SHA-256 三路相同；回归弱 hash **`588d30e70f9b4ddd` 不变**、exit 0；
+  body+contact SHA-256 三路相同；回归弱 hash **`588d30e70f9b4ddd`（MSVC，同 toolchain 不变）**、exit 0；
   `scripts/format.ps1 -Check` 117 文件 OK；CI 新增 clang-format job。
 - **性能（canonical Release）**：宽相 2000 体 **7.70x**（2.12x/4.88x/5.92x/7.70x）、小 N 交叉 N≈24–26；
   休眠 IslandSleep500 端到端 **0.4634 → 0.2656 ms（1.74x）**、纯全醒/全睡 **≈2.00x**；

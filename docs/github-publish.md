@@ -17,10 +17,10 @@
 | Mermaid 图 | ✅ 11/11 通过 Mermaid 11 语法校验 | GitHub 上不会出现报错框 |
 | 本地绝对路径 | ✅ 已清理 | 文档里的本机路径替换为 `<repo-root>` / 相对路径 |
 | **Git 身份 / 历史** | ✅ **已改写** | 全部 commit + 8 个 tag 的 author/committer/tagger 已改为 `baisctong <1519892588@qq.com>` |
-| remote | ✅ 已添加 | `origin = https://github.com/baisctong/Physics2D.git`（推送前需仓库已存在 + 本机 GitHub 登录） |
-| 推送 main + tags | ⏳ **待执行** | 需要你本机完成一次 GitHub 登录（见 §2），或提供 PAT |
-| GitHub Release / About / topics | ⏳ 待执行（网页/API） | 见 §3 |
-| CI 首跑 | ⏳ 推送到 GitHub 后触发 | 从未在远端跑过，首推要盯（见 §5） |
+| remote | ✅ 已添加 | `origin = https://github.com/baisctong/Physics2D.git` |
+| 推送 main + tags | ✅ **已完成** | 2026-10-31 推送；=`main`/`origin/main`、8 个 tag（含 v1.0-release）全部在远端 |
+| GitHub Release / About / topics | ✅ 已完成 | Release `v1.0-release`（正文含 4 张 GIF）；About description + 13 个 topics 已经 GitHub API 设置 |
+| CI 首跑 | ✅ 已跑通并修复 | 首跑 9 条检查 4 绿 5 红（GCC 可移植性 + GLFW Wayland + 跨 toolchain golden）；修复后全绿，见 §5 |
 
 ## 1. Git 身份（已完成，保留命令供参考）
 
@@ -47,7 +47,7 @@ git status --short             # 空
 > 若你希望 commit 关联 GitHub 贡献图，请确认 `1519892588@qq.com` 已加入 GitHub 账号
 > （Settings → Emails）；否则 GitHub 会把 commit 显示为未关联。
 
-## 2. 创建远端仓库并推送（待执行，需要一次 GitHub 登录）
+## 2. 创建远端仓库并推送（已完成）
 
 ### 2.1 先在 GitHub 创建空仓库
 
@@ -100,28 +100,37 @@ git describe --tags                 # v1.0-release
 
 CI badge 在第一次 workflow 运行完成后才会出状态；Release badge 在 tag 推上去后显示 `v1.0-release`。
 
-## 5. 首次推送后：盯一次 CI（重要）
+## 5. 首次推送后的 CI：首跑结果与修复（重要）
 
-**这个仓库的 CI 从未在远端跑过**（W1 起所有验证都是本机脚本）。6 个 job 定义、GitHub UI 上共 9 条检查：
-`build-test`（ubuntu/windows × debug/release = 4）、`sanitizers`、`headless`、`regression`、`format`、`layering`。
-首推后预计需要 1 次调试迭代，优先看：
+首跑 run `41173670546`（sha `ad5c1b1`）：9 条检查 **4 绿 5 红** —— 绿的是 `clang-format`、`layering`、
+windows debug/release；红的是所有 Linux job。日志显示两个"本地 MSVC 全绿完全看不到"的问题：
 
-1. **format**：CI 的 clang-format **固定为 `23.1.3`**（与本机一致；ubuntu apt 包版本更老，可能对少数
-   构造给出不同结果）。若 pip 装包失败，可改 `pipx run clang-format==23.1.3` 或临时设为非阻塞（不推荐）。
-2. **sanitizers（Linux）**：31 个 death test 会**真正执行**（本机 sandbox 里被 SKIP，只在 debug 工作区外
-   验证过）。若个别在 ASan/UBSan 下行为不同，看 `ctest --output-on-failure`；必要时先确认不是真实泄漏，
-   再考虑 `ASAN_OPTIONS=detect_leaks=0`。
-3. **build-test / windows**：首次 FetchContent 下载 + MSVC 编译 GLFW/ImGui 较慢（正常 5–10 分钟）；
-   若 `cl.exe` 找不到，检查 `ilammy/msvc-dev-cmd` 是否在 configure 之前（当前是）。
-4. 若 CI 红而本地绿：按 [`testing.md`](testing.md) §2 复跑同一 preset，再开 PR / `workflow_dispatch` 调试；
-   修 CI 不影响已发布 tag 的内容。
+1. **GCC 编译失败：`include/physics2d/Core/BodyDef.h` 用了 `uint8_t` 却没有 `#include <cstdint>`**。
+   MSVC STL 会传递包含，libstdc++ 不保证 → `enum class BodyType : uint8_t` 在 GCC 上直接语法错误。
+   → 修复：5 个公共头 + 32 个 TU 补显式标准库 include（自包含头原则）；本地 MSVC 重跑 387/387、0 警告。
+2. **Linux configure 失败：GLFW 3.4 `Failed to find wayland-scanner`**（GLFW 默认编 Wayland 后端，
+   CI 只装了 xorg-dev）→ 修复：`cmake/Dependencies.cmake` 强制 `GLFW_BUILD_WAYLAND=OFF`、
+   `GLFW_BUILD_X11=ON`；`docs/dev-setup.md` 记录该决策。
+3. 预防性：非 MSVC 编译器加 `-ffp-contract=off`，避免编译器把 `a*b+c` 融合成 FMA 导致跨平台回归漂移。
 
+修复 commit `0dccdf3` 后第二次 run（`41174026594`）：**所有编译/configure 通过**，Linux 只剩
+`regression_default` 红：量化弱 hash 跨编译器不一致（MSVC `588d30e70f9b4ddd` vs GCC
+`001d846118f05125`；Linux debug/release/ASan 三个 job 结果一致，不是噪声）。根因：30 盒塔在默认
+8 迭代下坍塌、动力学混沌，把 libm/FMA 的末位差异放大到量子级——v1.0 文档里"量化弱 hash 跨编译器可
+移植"的声明被真实 CI 推翻。→ 修复：**按 toolchain 两份 golden**（`default_600.txt` MSVC /
+`default_600_gcc.txt` GCC），`tests/CMakeLists.txt` 按编译器选择，CI 的 ubuntu 回归 job 用 `_gcc`；
+`tests/regression/README.md` 写清契约，devlog 有复盘。这比"关掉 Linux 回归"诚实：每个平台仍然
+严格门禁自己的 golden。
+
+> 经验：**远端 CI 是本地 MSVC 之外的第二把尺子**。首推前不要对"全绿"打包票——本文档 §5 的风险清单
+> 全部兑现了；修复本身也是很好的面试素材（"我的项目第一次跨平台 CI 就抓到了 MSVC-only 的 include
+> 依赖和 FP 可移植性假设"）。
 ## 6. 发布前最后自检（本次已全部通过）
 
 ```powershell
 git status --short                 # 空
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/format.ps1 -Check   # 117 文件 OK
-.\build\debug\tests\physics2d_regression.exe --check tests\regression\golden\default_600.txt  # 588d30e70f9b4ddd
+.\build\debug\tests\physics2d_regression.exe --check tests\regression\golden\default_600.txt  # MSVC; Linux 用 default_600_gcc.txt
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset debug -RunTests   # 387/387
 ```
 

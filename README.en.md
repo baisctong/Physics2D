@@ -253,9 +253,11 @@ wheel to zoom, `R` reset camera.
   MSVC `/W4 /permissive-` **0 project warnings**. Running the test executable outside the workspace
   → **386/386 gtest all pass** (the 31 death tests really execute).
 - **Deterministic regression**: `physics2d_regression` replays a fixed 600-step scene; the
-  quantized weak hash (quantum 1e-5) **`588d30e70f9b4ddd`** matches the golden file
-  (CTest `regression_default` + CI job); exit codes: 0 match / 1 mismatch / 2 usage or IO error.
-  Pure refactors (broad-phase switch, island grouping) must not change the hash.
+  quantized weak hash (quantum 1e-5) must match the **per-toolchain golden** (CTest
+  `regression_default` + CI job; MSVC `588d30e70f9b4ddd`, GCC/Linux `001d846118f05125`); exit
+  codes: 0 match / 1 mismatch / 2 usage or IO error. Within one toolchain, pure refactors
+  (broad-phase switch, island grouping) must not change the hash; across toolchains bit
+  identity is not guaranteed (measured by the first Linux CI run, see `tests/regression/README.md`).
 - **Equivalence evidence (optimizations do not change physics)**:
   - the same scene with no broad phase / BruteForce / SAP over 300 steps is **bit-identical at
     545 floats per frame** (body state + contact list including accumulated impulses); switching

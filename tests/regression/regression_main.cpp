@@ -28,9 +28,12 @@
 //   Every body is created with `allowSleep = false`: the regression scene
 //   deliberately keeps exercising continuous dynamics. Island sleeping is covered
 //   by tests/unit/test_world_sleep.cpp, and island grouping / the flat solve are
-//   bit-identical (Solver/Island.h), so the WEEK 7 quantization weak hash must stay
-//   `588d30e70f9b4ddd`. If it changes, the island work altered the physics - that
-//   is a bug to investigate, never a golden update.
+//   bit-identical (Solver/Island.h), so the weak hash must stay stable WITHIN a
+//   toolchain: MSVC `588d30e70f9b4ddd`, GCC/libstdc++ `001d846118f05125` (the
+//   first remote Linux CI run proved the hash is not portable across compilers:
+//   the chaotic 30-box collapse amplifies libm/FMA last-bit differences). Each
+//   toolchain has its own golden file; a same-toolchain change means the physics
+//   changed - investigate, never silently update the golden.
 //
 // USAGE / EXIT CODES (test contract, task-5)
 //   physics2d_regression                        print the hash line, exit 0

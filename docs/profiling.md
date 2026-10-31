@@ -22,7 +22,7 @@
 | 3 | **整岛休眠让静止场景变便宜** | IslandSleep500（500 盒/100 岛）：frame 105 全睡；testbed awake 窗口 0.4540 → 全睡 0.2671 ms（**1.70x**），gtest 中位 0.4646 → 0.2675 ms（1.72x；两轮会话 1.64–1.74x） |
 | 4 | **全醒 vs 全睡的真实差距约 2x** | 永不休眠稳态 0.540 ms vs 全睡 0.267–0.277 ms（≈1.98–2.02x）；1.64–1.74x 是 testbed 的"awake 窗口"口径（该窗口内已有个别岛先睡，见 §3.2） |
 | 5 | **按岛打包（grouped-packed）没有收益，默认关闭** | 400 bodies/760 contacts、8 迭代（8 次运行中位）：flat 1.860 / grouped-direct 1.908（0.97x，噪声内）/ packed 2.137 ms（**0.87x**）；32 迭代 7.056 / 7.570（0.93x）/ 7.928（0.89x） |
-| 6 | **交付质量**：三 preset 0 警告、全绿、回归 hash 不变、换宽相物理逐位一致 | debug 387 / release 390 / sanitize 387 个 ctest 全过；弱 hash `588d30e70f9b4ddd`；`none/bf/sap` body+contact 输出 SHA-256 相同 |
+| 6 | **交付质量**：三 preset 0 警告、全绿、回归 hash 不变、换宽相物理逐位一致 | debug 387 / release 390 / sanitize 387 个 ctest 全过；弱 hash 按 toolchain（MSVC `588d30e70f9b4ddd` / GCC `001d846118f05125`，同一 toolchain 内稳定）；`none/bf/sap` body+contact 输出 SHA-256 相同 |
 
 ---
 
@@ -132,7 +132,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset re
 | 三模式 8 迭代（flat / direct / packed） | 1.860 / 1.908（0.97x）/ 2.137（0.87x） | **1.750 / 1.856（0.94x）/ 2.442\***（0.72x） | \*packed 单次 2.13–2.54 波动大；direct≈flat、packed 最慢的结论不变 |
 | 8 demo smoke | §6 表 | **8 个 demo 全部 exit 0，字段与 §6 表逐项一致**（FallingBall 5.057mm、BoxStack 3.893mm、Pyramid200 41.863mm、StressBenchmark 170.739mm、Dominoes 20/20、IslandSleep500 100 岛/500 睡） | 一致 |
 | 宽相 A/B SHA-256（BoxStack 300 步） | `E74DC08…`（none/bf/sap 相同） | **`E74DC08335693F03…` 三者相同**；另测 StressBenchmark `FBB723E8C43778DE`、Dominoes `F1267B04DF3BB637` 也都三路一致 | 一致 |
-| 回归弱 hash / exit code | `588d30e70f9b4ddd` / 0 | **同值 / exit 0**（exact `f4390ef86c075a04`） | 不变 |
+| 回归弱 hash / exit code | `588d30e70f9b4ddd`（MSVC）/ 0 | **MSVC 同值 / exit 0**（exact `f4390ef86c075a04`） | 同 toolchain 不变 |
 | 工作区外 death tests | 386/386（31 个真跑） | **386/386 passed、exit 0** | 一致 |
 | GIF（§4 的 `docs/images/`） | — | 用 canonical `build/release` testbed 重录 5 张（总计 1,692.6 KB） | 见 `docs/demos.md` |
 
@@ -381,7 +381,8 @@ exit 0 = 通过。下表是**最终源码重建后的 debug 二进制**（20:40 
 ```
 
 - 场景：`tower30+circles20`（30 盒塔 + 20 随机圆，51 bodies），600 步；**弱 hash（quantum 1e-5）**
-  `588d30e70f9b4ddd` 与 golden 一致，`exact=f4390ef86c075a04` 仅供信息；
+  MSVC `588d30e70f9b4ddd` / GCC·Linux `001d846118f05125` 各自与对应 golden 一致，
+  `exact=f4390ef86c075a04` 仅供信息；
 - 退出码语义本次逐条复核：
 
 | 调用 | 期望 | 实测 |
@@ -394,7 +395,7 @@ exit 0 = 通过。下表是**最终源码重建后的 debug 二进制**（20:40 
 | 未知参数 | 2 | **2** |
 | `--help` | 0 | **0** |
 
-- **hash 不变的纪律**：Week 6 起弱 hash 就是 `588d30e70f9b4ddd`；Week 7 岛屿/休眠、Week 8 的
+- **hash 不变的纪律（同 toolchain 内）**：MSVC 自 Week 6 起是 `588d30e70f9b4ddd`；Week 7 岛屿/休眠、Week 8 的
   Core 校验与边界测试都是纯顺序变换/纯校验，**hash 未变**（本次复核仍为同值）。
 
 ### 7.2 宽相 A/B（换宽相物理输出逐位一致）
@@ -453,7 +454,7 @@ BoxStack 300 步，分别用 `--broadphase none|bf|sap` 运行，取所有 `[smo
    `Validate` 都会跑；健康场景全部通过（上述 12 个边界测试逐步调用 `CheckSane()` 验证无假阳性）。
 
 > 这两处只影响**非法输入行为**与**Debug 校验**：合法输入路径逐位不变，回归弱 hash 仍是
-> `588d30e70f9b4ddd`（§7.1），三 preset 全绿（§5）。
+> `588d30e70f9b4ddd`（MSVC；§7.1），三 preset 全绿（§5）。
 >
 > 注：本次只负责 `test_boundary_world.cpp` 与 `src/Core/`；退化多边形/零密度/极大速度/超长薄条/
 > 极端 mass ratio/NaN 输入等数学·几何·求解器侧边界由 `solver-dev` 同批的

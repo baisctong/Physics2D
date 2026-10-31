@@ -15,7 +15,7 @@
 >   §5/§6 = 偏差登记与"不可破坏的不变量"；[`devlog.md`](devlog.md) = 每周实测历史。
 >
 > **v1.0 状态声明**：W8 只新增**边界测试、断言校验与文档**，没有改物理行为、Step 顺序、
-> 物理常数或公共 API（逐位证据：回归弱 hash **`588d30e70f9b4ddd` 未变**，exact
+> 物理常数或公共 API（逐位证据：同一 toolchain 内回归弱 hash 未变（MSVC `588d30e70f9b4ddd`），exact
 > `f4390ef86c075a04` 仅作信息打印；见 `profiling.md` §7.1）。W8 的 4 处代码改动清单见 §5。
 
 ---
@@ -161,7 +161,7 @@ Push-Location $dir; .\physics2d_tests.exe; Pop-Location
 
 | 输入 / 场景 | 契约行为 | 实现位置 | 测试位置 |
 | --- | --- | --- | --- |
-| 确定性回归 golden | **行为契约**：弱 hash（quantum 1e-5）**`588d30e70f9b4ddd`** 必须与 golden 一致；纯重构（宽相切换、岛屿分组、W8 校验新增）hash **不变**；只有"有意的物理/场景变更"才能更新 golden，且 devlog 写 old/new 与原因 | `tests/regression/regression_main.cpp`、`tests/regression/golden/default_600.txt` | CTest `regression_default` + CI job；`profiling.md` §7.1；命令行见 §6 |
+| 确定性回归 golden | **行为契约**：弱 hash（quantum 1e-5）必须与该 toolchain 的 golden 一致（MSVC `default_600.txt` `588d30e70f9b4ddd`；GCC `default_600_gcc.txt` `001d846118f05125`）；**同一 toolchain 内**纯重构 hash 不变；只有"有意的物理/场景变更或 toolchain 升级"才能更新 golden，且 devlog 写 old/new + toolchain 与原因 | `tests/regression/regression_main.cpp`、`tests/regression/golden/default_600{,_gcc}.txt` | CTest `regression_default` + CI job；`tests/regression/README.md`；`profiling.md` §7.1；命令行见 §6 |
 | 回归工具 exit code | **【返】** `0` = 匹配/正常打印/写 golden；`1` = hash mismatch；`2` = 参数错误 / 文件不存在或不可读 / 未知参数 | `tests/regression/regression_main.cpp` | `profiling.md` §7.1 的逐条复核表（7 种调用） |
 | 同平台确定性 | **行为契约**：固定 dt、vector 下标顺序、候选对规范化、岛分区规范序 → 同平台同 build 逐位一致（两 World 343 floats、三求解模式 469 floats/步、三宽相 545 floats/帧） | 见 `dev-interfaces.md` §6 | `test_world_stability.cpp::WorldStabilityTest.TwoIdenticalTowersStayBitIdentical` 等 |
 | 跨平台 | **【限】** 不保证 bit-exact（FMA 收缩/libm 差异）；用量化弱 hash（1e-5）判定 | `MathUtils::HashQuantizedFloat` | `test_mathutils.cpp::MathUtils.HashQuantizedFloatBuckets`；见 §2.10 |
@@ -311,7 +311,7 @@ Push-Location $dir; .\physics2d_tests.exe; Pop-Location
 
 - **现象/数字**：同平台同 build 逐位一致（两 World 600 步 343 floats、三求解模式 469 floats/步、
   三宽相 545 floats/帧）；跨平台**不保证 bit-exact**（FMA 收缩、libm、x87 差异），用
-  **量化弱 hash（quantum 1e-5）** + golden 判定（`588d30e70f9b4ddd`）。
+  **量化弱 hash（quantum 1e-5）** + 按 toolchain 的 golden 判定（MSVC `588d30e70f9b4ddd` / GCC `001d846118f05125`）。
 - **为什么不修**：这是浮点/编译器的客观差异，不是引擎能"修"的；强行追求跨平台逐位会限制编译器
   优化（如禁 FMA）并让 CI 变得不可靠。
 - **正解**：对外承诺"同平台可复现 + 跨平台量化容差一致"；`exact` 位 hash 只打印作信息。
@@ -364,7 +364,7 @@ Push-Location $dir; .\physics2d_tests.exe; Pop-Location
 | packed 模式 | **0.87x（比 flat 慢约 15%）**（W8 最终源码轮：flat 1.860 / packed 2.137 ms，8 迭代） | W7 历史 0.82x/~18% 仅作量级对照 |
 | split impulse 深穿透 | **1.139999 m/s 对应 0.10 m 深穿透**场景（手算 `(0.2/dt)·(0.10−0.005)=1.14`）；**0.02 m 浅重叠**对应 Baumgarte 0.18 m/s（另一个单测场景） | 不要把 1.139999 标成"2 cm 重叠" |
 | 10 盒塔入睡 | **step 859**（W7 debug 历史实测，同机）；W8 Release 小场景：5 盒塔首次全睡 **step 84**、两座 3 盒塔 **step 37**（`profiling.md` §3.3） | 不要写"10 盒塔 600 步入睡" |
-| 回归 hash | 弱 hash **`588d30e70f9b4ddd`**（quantum 1e-5）未变；exact `f4390ef86c075a04` 仅信息 | — |
+| 回归 hash | 同一 toolchain 内弱 hash 未变（MSVC `588d30e70f9b4ddd`；GCC `001d846118f05125`）；exact `f4390ef86c075a04` 仅信息 | — |
 | W8 是否改物理 | **没有**：Step 顺序/物理常数/公共 API 未变；4 处改动只加拒绝/校验/assert（§5） | — |
 | 性能数字 | 唯一来源 [`profiling.md`](profiling.md)（含测量环境与噪声纪律）；本文只引用与限制相关的数字 | 不要把 Debug/ASan/`avg_frame_ms`（含 GPU）当性能指标 |
 
@@ -441,7 +441,7 @@ Push-Location $dir; .\physics2d_tests.exe; Pop-Location
 ## 5. W8 代码改动清单（只加契约/校验，不改物理）
 
 > 验证：`docs/profiling.md` §8.2、`dev-interfaces.md` §5 的 W8 行；回归弱 hash 未变
-> （`588d30e70f9b4ddd`）；Step 顺序/物理常数/公共 API 未变。
+> （同一 toolchain 内 MSVC `588d30e70f9b4ddd`）；Step 顺序/物理常数/公共 API 未变。
 
 | 文件 | 改动 | 影响面 | 测试 |
 | --- | --- | --- | --- |

@@ -6,7 +6,7 @@
 > 在 PS7 下会因 `$isWindows` 只读自动变量报错（尚未适配）；本文命令均按 PS 5.1 验证。
 >
 > 当前基线（tag `v1.0-release`）：**debug/sanitize 387 / release 390 个 ctest 全绿、
-> 0 项目警告**（31 个 sandbox death test 自动 SKIP）；8 个 demo smoke 全 exit 0；回归弱 hash `588d30e70f9b4ddd`。数字随机器/噪声略有浮动，
+> 0 项目警告**（31 个 sandbox death test 自动 SKIP）；8 个 demo smoke 全 exit 0；回归弱 hash 按 toolchain（MSVC `588d30e70f9b4ddd` / GCC·Linux `001d846118f05125`，同一 toolchain 内稳定）。数字随机器/噪声略有浮动，
 > 断言以"通过/exit 0/哈希相等"为准，具体毫秒数只作参考。
 
 ---
@@ -261,20 +261,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset re
 ## 7. 确定性回归（hash）
 
 ```powershell
-# 检查 golden（正常应 hash=588d30e70f9b4ddd、exit 0）
+# MSVC 本机（Windows）：默认 golden 名 default_600.txt
 .\build\debug\tests\physics2d_regression.exe --check tests\regression\golden\default_600.txt
+
+# GCC/Clang（Linux）：使用 _gcc golden（CMake 的 regression_default 会自动选择；手工跑时显式指定）
+.\build\debug\tests\physics2d_regression.exe --check tests\regression\golden\default_600_gcc.txt
 
 # 只打印当前 hash（调试用）
 .\build\debug\tests\physics2d_regression.exe
 
-# 有意改变物理/场景后重新生成 golden（谨慎！必须写 devlog 说明 old/new 与原因）
+# 有意改变物理/场景后重新生成该 toolchain 的 golden（谨慎！必须写 devlog 说明 old/new 与原因）
 .\build\debug\tests\physics2d_regression.exe --write-golden tests\regression\golden\default_600.txt
 ```
 
-- 判定值是**量化弱 hash**（quantum 1e-5），跨编译器/平台可移植；`exact=` 只是原始位 hash 的信息打印。
+- 判定值是**量化弱 hash**（quantum 1e-5），`exact=` 只是原始位 hash 的信息打印。
+- **同一 toolchain 内**：纯重构（宽相切换、岛屿分组、排序优化）hash 必须不变；只有"有意的物理/场景
+  变更"才更新 golden，并在 `docs/devlog.md` 记录。
+- **跨 toolchain**：hash 不可移植（首次远端 Linux CI 实测：MSVC `588d30e70f9b4ddd` vs GCC
+  `001d846118f05125`，Linux debug/release/ASan 三次都稳定在后者）。因此仓库有**两份 golden**，
+  `tests/CMakeLists.txt` 按编译器选择；详见 [`tests/regression/README.md`](../tests/regression/README.md)。
 - 退出码：`0` 匹配 / `1` 不匹配 / `2` 文件或参数错误。
-- **纪律**：纯重构（宽相切换、岛屿分组、排序优化）hash 必须不变；只有"有意的物理/场景变更"才更新
-  golden，并在 `docs/devlog.md` 记录。
 
 ---
 
@@ -325,7 +331,7 @@ Pop-Location
 - [ ] `-Preset sanitize -RunTests` → **387/387 passed**（ASan 无诊断）
 - [ ] 8 个 demo `--smoke --hidden` 全部 **exit 0**，关键字段符合 §5 表
 - [ ] `--broadphase none|bf|sap` 的 body/contact 输出 **SHA-256 相同**（§5 脚本）
-- [ ] `physics2d_regression --check` → **hash `588d30e70f9b4ddd`**、exit 0
+- [ ] `physics2d_regression --check` → **MSVC `588d30e70f9b4ddd` / GCC·Linux `001d846118f05125`**、exit 0
 - [ ] 工作区外跑测试 exe → **386/386 gtest passed**（含 31 个 death test，§8）
 - [ ] 交互验收 §4 的 9 项（塔稳定/摩擦翻坡/多米诺连锁/休眠 1.7x/宽相切换/Contact 柱状条/单步/慢放/AABB）
 - [ ] `scripts/format.ps1 -Check` → OK（117 个 C++ 文件）

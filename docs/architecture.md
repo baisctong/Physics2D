@@ -6,7 +6,7 @@
 > 边界契约与已知限制见 [`boundary-contracts.md`](boundary-contracts.md)；接口预留清单与偏差登记见
 > [`dev-interfaces.md`](dev-interfaces.md)。
 >
-> Week 8 是文档与交付周：**物理行为与公共 API 均未改变**（回归弱 hash `588d30e70f9b4ddd` 不变），
+> Week 8 是文档与交付周：**物理行为与公共 API 均未改变**（回归弱 hash 同一 toolchain 内不变：MSVC `588d30e70f9b4ddd` / GCC `001d846118f05125`），
 > 新增内容只有文档、边界测试与 testbed 的帧捕获工具。
 
 ## 0. 一张图总览（W8 新增）
@@ -502,8 +502,10 @@ testbed 帧捕获 CLI）：
 3. 不依赖浮点环境（未开 `-ffast-math`）。
 4. 场景生成使用带种子的 `std::mt19937`，只出现在场景构造，不进物理计算。
 5. `MathUtils` 提供 FNV-1a（float 位模式 + 量化弱 hash）；**W6 起** `tests/regression` 用
-   量化弱 hash（quantum 1e-5）作为 golden 判定值，exact 位 hash 只作信息打印：
-   同平台逐位一致，跨编译器/平台靠量化容差可移植。
+   量化弱 hash（quantum 1e-5）作为 golden 判定值，exact 位 hash 只作信息打印。**W8 发布后首次
+   远端 CI 更正**：该 hash 只在**同一 toolchain 内**稳定（MSVC 与 GCC 各一份 golden：
+   `default_600.txt` / `default_600_gcc.txt`），不能跨编译器可移植——30 盒塔坍塌的混沌放大了
+   libm/FMA 末位差异（详见 `tests/regression/README.md`）。
 6. **W6 起**：宽相候选对必须规范化为 `(i<j, sorted, deduped)` 的 body-index 对再进窄相，
    因为接触列表顺序决定 PGS 求解顺序；三路（无宽相/BruteForce/SAP）逐帧逐位一致的验收
    就是这条规则的证据。
@@ -533,7 +535,7 @@ testbed 帧捕获 CLI）：
 | L1 单测 | 数学库、形状质量/AABB（圆/平面/多边形）、解析碰撞（圆族/圆-多边形/多边形-平面）、SAT+裁剪（位姿矩阵/ContactID 稳定性/cache）、求解器数学（`K_n`/`K_t`/冲量响应/摩擦锥/摩擦角扫描/warm start 播种/split impulse 位置层）、**宽相（BruteForce 参考/随机 AABB/SAP 与 BruteForce 1000 帧逐帧一致/端点不变量）**、**岛屿（DFS 规范序/static 边界/2000 链/三求解模式逐位一致/休眠岛跳过）**、IDPool、accumulator、预留接口编译、**W8 边界契约（退化/溢出多边形、零/负/非有限密度、极大速度、1×100 m 薄条、1:1e6 mass ratio、非法输入 death tests）** | `tests/unit/` |
 | L2 组件 | 完整 Step 场景断言（坠落/钳制/销毁/形状附着/接触持久化/动量守恒/反弹高度/多边形叠放/确定性/10 方块 10 s 里程碑/warmFactor 对比/split impulse 能量对比/无宽相 vs BF vs SAP 三路逐位一致/proxy 生命周期/fat AABB 只加候选/**岛屿统计/岛求解 A/B 逐位一致/整岛休眠与 100 步位不变/4 唤醒入口/邻近唤醒/多米诺连锁唤醒**/**W8：生命周期/stale handle/Clear/休眠边界/宽相 churn 逐位一致/islandId+sleepTime+零速度 invariant**） | `tests/unit/test_world_*.cpp` |
 | L3 回归 | **W6 起生效**：`physics2d_regression` 重放固定 600 步场景（`allowSleep=false` 以保持连续动力学），
-量化弱 hash 对比 `golden/default_600.txt`；CTest `regression_default` + CI `regression` job | `tests/regression/` |
+量化弱 hash 对比按编译器选择的 golden（`default_600.txt` MSVC / `default_600_gcc.txt` GCC）；CTest `regression_default` + CI `regression` job | `tests/regression/` |
 
 当前规模（v1.0 终版源码）：**debug/sanitize 387 个 ctest 用例、release 390**（多 3 个 release-only
 契约测试）= **386 个 gtest**（其中 **31 个 death test** 在沙箱内自动 SKIP、CI 执行）+ 1 个

@@ -1,4 +1,4 @@
-# physics2d_regression golden v1
+# physics2d_regression golden v1 (MSVC; GCC/Linux uses default_600_gcc.txt)
 scene=tower30+circles20
 frames=600
 bodies=51

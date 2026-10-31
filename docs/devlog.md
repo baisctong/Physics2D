@@ -751,4 +751,57 @@
 4. **文档里的每条命令都要在提交前真跑**：format、三 preset、smoke、A/B、regression、death tests、
    bench、GIF 重录——本次全部在 canonical 构建上跑过，数字才敢写。
 
+## 发布后 · GitHub 首推与远端 CI 修复（2026-10-31）
+
+**完成**
+- 发布到 **https://github.com/baisctong/Physics2D**（public、MIT 被 GitHub 正确识别）：`main` + 8 个
+  annotated tag 推送成功；GitHub Release `v1.0-release`（正文 = release-notes + 4 张 GIF）；
+  About description + 13 个 topics；README 中英 CI/Release badge 上线。
+- 推送前完成：`git filter-repo --mailmap` 把 44 个 commit + 8 个 tag 的身份统一为
+  `baisctong <1519892588@qq.com>`；`.gitattributes`（LF/CRLF/二进制）；LICENSE 版权人；CI 加固
+  （只读权限、`workflow_dispatch`、job 超时、clang-format 固定 23.1.3）；Mermaid 11/11 语法校验；
+  文档本地绝对路径清理。
+
+**卡住的地方（远端 CI 首跑暴露的、本地 MSVC 全绿完全看不到的问题）**
+1. **GCC 编译失败：`BodyDef.h` 用了 `uint8_t` 但没有 `#include <cstdint>`**
+   - 现象：Ubuntu 所有 job 报 `BodyDef.h:18:21: error: found ':' in nested-name-specifier`
+     （`enum class BodyType : uint8_t` 里的 `uint8_t` 未声明）。
+   - 排查：同一文件在 MSVC 下通过——MSVC STL 的头会传递包含 `<cstdint>`，libstdc++ 不保证。
+   - 修复：5 个使用定宽整数的公共头补 `<cstdint>`/`<cstddef>`，32 个直接使用但依赖传递包含的 TU
+     补显式 include（自包含头原则）；本地 MSVC 重跑 debug **387/387、0 警告**。
+   - 教训：**MSVC 全绿 ≠ 可移植**；远端 CI 是"第二个编译器"。
+2. **Linux configure 失败：GLFW 3.4 `Failed to find wayland-scanner`**
+   - 根因：GLFW 3.4 在 Linux 默认同时编 Wayland 后端（需要 `libwayland-dev`/`wayland-protocols`），
+     CI 只装了 `xorg-dev`；本地 Windows 与 Linux dev-setup 都没暴露这个假设。
+   - 修复：`cmake/Dependencies.cmake` 显式 `GLFW_BUILD_WAYLAND=OFF`、`GLFW_BUILD_X11=ON`
+     （testbed 在 Linux 走 X11），`docs/dev-setup.md` 记录；Linux 依赖列表不需要 wayland 工具链。
+3. **跨 toolchain 回归 hash：v1.0 文档的"量化弱 hash 跨编译器可移植"假设被推翻**
+   - 现象：编译问题修完后，Linux 只剩 `regression_default` 红；hash 稳定为
+     `001d846118f05125`（debug/release/ASan 三个 job 相同），而 MSVC golden 是 `588d30e70f9b4ddd`；
+     最终帧 contacts 也不同（83 vs 82）。
+   - 排查：场景生成已是自研 LCG（不依赖 `<random>`），量化 1e-5 也挡不住——30 盒塔在默认 8 迭代下
+     坍塌、动力学混沌，600 步内把 libm（`sqrt`/`cos`/`sin`/`atan2`）与 FMA 的末位差异放大到量子级。
+     加 `-ffp-contract=off` 只是减少而不是消除差异。
+   - 修复：**回归 golden 按 toolchain 维护**——`default_600.txt`（MSVC）与
+     `default_600_gcc.txt`（GCC/libstdc++）；`tests/CMakeLists.txt` 按编译器选择，CI 的 ubuntu
+     回归 job 显式用 `_gcc`。跨平台"物理等价"改由 386 个单测（同 toolchain 逐位断言 + 物理量容差）
+     保证；`tests/regression/README.md` 写清契约与更新策略。
+   - 诚实更正：v1.0 文档里"跨编译器可移植"的说法改为"同一 toolchain 内可复现，跨 toolchain 不保证"，
+     dev-interfaces §5 已登记（W8 发布后偏差）。
+
+**数据**
+- 首跑 run `41173670546`（sha `ad5c1b1`，9 条检查）：4 绿（clang-format / windows debug / windows
+  release / layering）、5 红（ubuntu debug/release 的 configure=GLFW Wayland；headless/sanitize/
+  regression 的 build=缺 include）。
+- 修复 commit `0dccdf3` 后第二次 run `41174026594`：configure/build 全部通过，Linux 只剩
+  `regression_default`（跨 toolchain hash）；MSVC/Linux 其他所有测试全绿。
+- 拆 toolchain golden 后第三次 run：见 GitHub Actions（本文在确认全绿后更新）。
+
+**给未来的提醒**
+1. 发布到 GitHub 前，先把"本地验证基线"当成必要条件而非充分条件：至少让 CI 在一个非本地编译器上
+   跑过一次，再对"全绿"下结论。
+2. 自包含头（每个头 include 它直接使用的标准库设施）应写进贡献规范；MSVC 传递包含是隐藏依赖。
+3. 跨编译器确定性要区分"同一 toolchain 内 bit-exact"与"跨 toolchain 物理等价"；混沌场景不要用
+   跨编译器 hash 当契约。
+
 

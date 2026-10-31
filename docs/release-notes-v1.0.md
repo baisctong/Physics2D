@@ -33,7 +33,7 @@
   **IslandSleep500（500 盒 / 100 岛）frame 105 全睡，Step 0.4634 ms → 0.2656 ms（1.74x）**；
   纯"全醒 vs 全睡"口径约 **2.0x**；多米诺 **20/20 连锁唤醒无跳过**。
 - **确定性回归**：`physics2d_regression` 重放固定 600 步场景，量化弱 hash（quantum 1e-5）
-  **`588d30e70f9b4ddd`** 与 golden 一致；W5-W8 的宽相切换、岛屿分组、休眠、W8 边界校验等全部改动后
+  **按 toolchain 的 golden** 一致（MSVC `588d30e70f9b4ddd` / GCC·Linux `001d846118f05125`）；W5-W8 的宽相切换、岛屿分组、休眠、W8 边界校验等全部改动后
   hash 不变。"换宽相不改物理"的证据：无宽相/BF/SAP 300 步**逐帧 545 floats 逐位一致**；SAP vs BF
   10 组场景 ×1000 帧 = 10,000 帧配对集合 0 mismatch（677,584 对比较）；testbed `none|bf|sap` 输出
   SHA-256 相同。
@@ -76,7 +76,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset de
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset release -RunTests
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset sanitize -RunTests
 
-# 确定性回归（期望 hash=588d30e70f9b4ddd、exit 0）
+# 确定性回归（MSVC 期望 hash=588d30e70f9b4ddd；Linux/GCC 为 default_600_gcc.txt、exit 0）
 .\build\debug\tests\physics2d_regression.exe --check tests\regression\golden\default_600.txt
 
 # 宽相性能（Release；2000 物体 ~7.7x）

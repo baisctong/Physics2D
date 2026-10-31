@@ -49,7 +49,7 @@
 | R9 | 岛屿/休眠 | **W7 已完成**：`Solver/Island.{h,cpp}`（显式栈 DFS、forward-star、规范序、static/kinematic 边界）+ `World::BuildIslands`（islandId/规范分区）+ `World::UpdateSleep`（整岛原子计时/入睡）+ `WakeIslandOfBody`（整岛唤醒：外力/冲量/transform + 宽相邻近）；休眠岛跳过 AABB 更新/窄相/求解但保留 proxy，休眠-休眠 pair 复用上一帧 contact | — | 无（关节未做；整岛求解顺序变更已由位级测试锁定） | 3 岛/合并岛；500-body 链 1 岛；sleep 后 100 步状态与接触冲量逐位不变；4 个唤醒入口 + 邻近唤醒；多米诺 20/20 无跳过 |
 | R10 | 接触/岛统计 | **W7 已完成**：`GetIslandCount()`（真实岛数）、`GetSleepingBodyCount()`（dynamic 休眠数）、`GetAwakeBodyCount()`；testbed Status 面板显示 islands/awake/sleeping | — | 无 | ImGui 面板数字与 World 一致（IslandSleep500：100 岛 / sleeping 500） |
 | R11 | 性能剖析 | `Core/Profiler.h` 宏已定义（默认空）；CMake 选项 `PHYSICS2D_ENABLE_TRACY`/`PHYSICS2D_TRACY_ROOT` 已留 | **v1.1（W8 评估后推迟）** | 打开 Tracy、在 8 个 Step 阶段与 SAP 排序/扫描埋点；`Plot` awake/contact 数 | Tracy 时间线与 README 数字对应。**W8 决策**：v1.0 的量化需求由 bench + testbed Status + `docs/profiling.md` 覆盖，不为此引入第三方依赖与 1–3% 采集开销；钩子保持可用 |
-| R12 | headless 回归 | **W6 骨架已完成**：`tests/regression/regression_main.cpp` + `physics2d_regression` target（只 link core）+ `tests/regression/golden/default_600.txt` + CTest `regression_default` + CI `regression` job；hash = FNV-1a **量化弱 hash**（quantum 1e-5，跨编译器/平台可移植）作为判定值，exact float-bit hash 仅信息打印；退出码 0 匹配 / 1 不匹配 / 2 用法或 IO 错误 | W7（可选增强） | `--frames` 模板化多场景 golden（W7 的 Pyramid200/休眠场景）；`scripts/compare_hash.py`（当前不需要，C++ 单文件更简单） | `regression_default` 在 debug/release/sanitize 三 preset 的 ctest 全绿；CI headless job 跑同一命令 |
+| R12 | headless 回归 | **W6 骨架已完成**：`tests/regression/regression_main.cpp` + `physics2d_regression` target（只 link core）+ `tests/regression/golden/default_600.txt` + CTest `regression_default` + CI `regression` job；hash = FNV-1a **量化弱 hash**（quantum 1e-5）作为判定值，exact float-bit hash 仅信息打印；**W8 发布后首次远端 CI 更正：hash 只在同一 toolchain 内可复现，MSVC 与 GCC 各一份 golden（`default_600.txt` / `default_600_gcc.txt`），跨编译器不保证可移植**；退出码 0 匹配 / 1 不匹配 / 2 用法或 IO 错误 | W7（可选增强） | `--frames` 模板化多场景 golden（W7 的 Pyramid200/休眠场景）；`scripts/compare_hash.py`（当前不需要，C++ 单文件更简单） | `regression_default` 在 debug/release/sanitize 三 preset 的 ctest 全绿；CI headless job 跑同一命令 |
 | R13 | 基准工具 | **W6 已完成**：`bench/bench_broadphase.cpp` 完整 CLI（`--broadphase brute|sap|all --bodies 50,200,500,2000 --frames --seed --json --help`）；30×30m 随机盒场景、只计 UpdateAABB+QueryPairs、前 100 帧预热、median/mean、markdown + JSON、打印环境 | — | 无（Tracy 接入在 W6-8 剩余项） | Release 实测表格进 README（Phase C canonical：N=50/200/500/2000 = 2.12x/4.88x/5.92x/7.70x）；小 N 交叉 N≈24–26（W8 测量会话 22–26、W6 记录 25–32，量级一致） |
 | R14 | Demo 扩展 | **W4-W8 已完成**：`testbed/Demo.h` 基类 + demo 注册表；**8 个 demo**（FallingBall/SphereStack/BoxStack/FrictionRamp/Pyramid200/StressBenchmark/**Dominoes**/**IslandSleep500**）；`SceneBuilders.h` 共享构造（含 DominoChain/BoxGrid）；Camera 自适应取景；暂停/单步/慢放快捷键；**W8 新增确定性帧捕获（`--capture-dir/--capture-every/--capture-start` → PPM→GIF），5 个 GIF 进 `docs/images/`** | — | 无（GIF 录制与说明已交付，见 `docs/demos.md` + `scripts/record_gifs.ps1`） | 8 个 demo smoke 全 exit 0；宽相切换物理结果不变；GIF 一条命令可复现 |
 | R15 | 冷热拆分 | **v1.1 候选（W8 决定不做）**（W4→W5→W6→W7→W8 连续顺延，见第 5 节偏差登记）：W7 的"岛内打包"实测在 400 体规模反而更慢（W8 复测 0.87x，比 flat 慢约 15%）；W8 profiling（`docs/profiling.md`）也没有证据表明 body 布局是热点 | v1.1 | `BodySim`/`BodyState` 并行数组（设计文档 3.3）；行为 hash 不变 | 全部测试通过、回归 hash 不变；**先有 Tracy/profiling 数据显示收益** |
@@ -146,6 +146,7 @@
 | **W8**：GIF 录制工具 | 给 testbed 增加**确定性帧捕获模式**（`--capture-dir DIR --capture-every K [--capture-start N]`，smoke 帧步进；渲染完成后 `glReadPixels` → PPM → Pillow 编码 GIF），并提交 `scripts/record_gifs.ps1` + 4 个优化后的 GIF 到 `docs/images/`（每个 ≤600KB，总计 ≤2.5MB；`.gitignore` 已白名单 `docs/**/*.gif`） | 本机无 ffmpeg、GIF 必须可复现且不能靠"手忙脚乱地录屏"；帧捕获走 smoke 的固定 1/60 步进 → 每次录制视觉完全一致。PPM→Pillow 链路避免引入 C++ 图片编码依赖；默认渲染路径零开销、物理未改。属于 testbed 工具（Layer 2），不违反"核心零第三方依赖" |
 | **W8**：文档结构 | 新增 `docs/{math,profiling,boundary-contracts,demos,resume-interview}.md`；`architecture.md` 增加 §0 总图、§3.7 数据所有权图、§4.6 Step 时序图、§4.7 岛屿/休眠状态机；README 重写为 v1.0 结构（GIF 墙/核心算法/性能/已知限制/Roadmap） | 设计文档 10.1/12.5 的 README/架构/数学提示词要求"一张图讲清 + 每个数字有测量条件 + 已知限制坦诚"；文档拆分成"单一事实来源"避免 README 与 docs 数字漂移（`profiling.md` 是性能数字的唯一来源，README 摘录关键表） |
 | **W8**：回归 hash | 保持 `588d30e70f9b4ddd` **不变** | W8 只新增文档/边界测试/testbed 捕获工具，没有改任何物理代码或场景；回归 golden 未更新（边界测试也不进回归场景） |
+| **W8 发布后（首次远端 CI）**：回归 golden 的跨 toolchain 可移植性 | **拆成两份 golden**：`default_600.txt`（MSVC）与 `default_600_gcc.txt`（GCC/libstdc++，Linux）；`tests/CMakeLists.txt` 按编译器选择，CI 的 ubuntu 回归 job 显式使用 `_gcc` 文件 | W6 设计时假设"量化弱 hash（1e-5）跨编译器可移植"，但首次真实 Linux CI 实测 MSVC `588d30e70f9b4ddd` vs GCC `001d846118f05125`（Linux debug/release/ASan 三次一致，不是噪声）。根因：30 盒塔在默认 8 迭代下坍塌、动力学混沌，把 libm/FMA 的末位差异放大到量子级。跨平台"物理等价"改由 386 个单测（同一 toolchain 内逐位断言 + 物理量容差）保证；golden 只保证同一 toolchain 内不漂移 |
 
 ---
 
@@ -185,8 +186,10 @@
   （漏检应先查 pair 规范化/时序，不是调大 margin）。
 - **`ValidateInternalState` 是契约**：SAP 测试任意时刻（增删/移动后）都必须为 true；
   不允许出现"只在 QueryPairs 之后才一致"的实现。
-- **回归 hash 纪律**：`tests/regression/golden/default_600.txt` 的弱 hash 只在**有意的物理/场景变更**
-  时更新，且必须在 devlog 写 old/new 与原因；纯重构（宽相切换、BodySim 拆分、排序优化）hash 不变。
+- **回归 hash 纪律**：golden 按 toolchain 维护（MSVC / GCC-libstdc++ 各一份）；弱 hash 只在
+  **有意的物理/场景变更或 toolchain 升级**时更新，且必须在 devlog 写 old/new + toolchain 与原因；
+  **同一 toolchain 内**纯重构（宽相切换、BodySim 拆分、排序优化）hash 不变；跨 toolchain 不保证
+  （首次远端 Linux CI 实测：MSVC `588d30e70f9b4ddd` vs GCC `001d846118f05125`）。
 
 ### W7 起生效的岛屿/休眠不变量（改 World/求解器前先核对）
 

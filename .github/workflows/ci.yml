@@ -131,8 +131,8 @@ jobs:
         run: cmake --preset headless
       - name: Build regression tool
         run: cmake --build --preset headless --target physics2d_regression
-      - name: Replay the golden scene
-        run: ./build/headless/tests/physics2d_regression --check tests/regression/golden/default_600.txt
+      - name: Replay the golden scene (GCC toolchain golden; see tests/regression/README.md)
+        run: ./build/headless/tests/physics2d_regression --check tests/regression/golden/default_600_gcc.txt
 
   # ---------------------------------------------------------------------------
   # Format guard (Week 8 delivery): every first-party C++ file must match the
