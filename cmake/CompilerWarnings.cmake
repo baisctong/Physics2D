@@ -24,6 +24,12 @@ function(p2_apply_project_warnings target)
             -Wsign-conversion
             -Wnon-virtual-dtor
             -Wold-style-cast)
+        # No FP contraction (fused multiply-add): the determinism golden file is a
+        # quantized weak hash and must not depend on the compiler deciding to fuse
+        # a*b+c into FMA (MSVC does not contract by default either). This keeps the
+        # Linux CI regression comparable to the Windows one; it costs a rounding
+        # step worth of precision at most and is required for reproducible physics.
+        target_compile_options(${target} PRIVATE -ffp-contract=off)
         if(PHYSICS2D_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE -Werror)
         endif()

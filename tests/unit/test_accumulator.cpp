@@ -13,6 +13,7 @@
 #include "physics2d/Core/TimeStep.h"
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
 
 namespace {

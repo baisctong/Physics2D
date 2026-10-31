@@ -10,6 +10,7 @@
 //  - FNV-1a over bytes is the project's single hash; it is fast, has no
 //    external dependency and its output is fully specified by this header.
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 

@@ -69,6 +69,13 @@ if(PHYSICS2D_BUILD_TESTBED)
     set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
     set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+    # GLFW 3.4 defaults to also building its Wayland backend on Linux, which needs
+    # wayland-scanner (libwayland-dev/wayland-protocols). The testbed targets the
+    # X11 backend on Linux (xorg-dev in CI/dev-setup), so force the choice to keep
+    # the dependency list minimal and the configure step deterministic across
+    # machines that do not have the Wayland tooling installed.
+    set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_X11 ON CACHE BOOL "" FORCE)
     FetchContent_Declare(glfw
         URL https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE)

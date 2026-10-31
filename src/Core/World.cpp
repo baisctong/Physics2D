@@ -37,7 +37,9 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <utility>
 #include <vector>
 

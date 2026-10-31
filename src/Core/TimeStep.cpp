@@ -8,6 +8,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 
 namespace p2 {
 

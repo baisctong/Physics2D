@@ -11,6 +11,7 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 
 namespace p2 {
 

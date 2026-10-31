@@ -44,6 +44,7 @@
 #include "physics2d/Math/Vec2.h"
 #include "physics2d/Solver/ContactSolver.h"
 #include "physics2d/Solver/Island.h"
+#include <cstddef>
 
 namespace {
 

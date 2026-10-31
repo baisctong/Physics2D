@@ -11,6 +11,7 @@
 // mutable at runtime; World copies it and the testbed edits the copy.
 
 #include "physics2d/Math/MathUtils.h"
+#include <cstdint>
 
 namespace p2 {
 

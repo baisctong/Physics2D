@@ -25,6 +25,7 @@
 #include "physics2d/Core/Handle.h"
 #include "physics2d/Core/IDPool.h"
 #include "physics2d/Solver/Island.h"
+#include <cstddef>
 
 namespace {
 

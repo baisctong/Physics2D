@@ -38,6 +38,7 @@
 #include "physics2d/Math/AABB.h"
 #include "physics2d/Math/Transform.h"
 #include "physics2d/Math/Vec2.h"
+#include <cstdint>
 
 namespace p2 {
 

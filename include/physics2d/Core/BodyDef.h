@@ -11,6 +11,7 @@
 #include "physics2d/Math/Transform.h"
 #include "physics2d/Math/Vec2.h"
 
+#include <cstdint>
 #include <string>
 
 namespace p2 {

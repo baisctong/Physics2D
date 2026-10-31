@@ -9,6 +9,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 
 namespace p2 {

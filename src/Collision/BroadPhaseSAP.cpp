@@ -42,6 +42,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <utility>
 
 namespace p2 {

@@ -79,8 +79,19 @@ sudo apt install -y build-essential cmake ninja-build git \
 ./scripts/build.sh debug --tests        # 等价于 configure + build + ctest
 ```
 
-CI（`.github/workflows/ci.yml`）四个 job：双平台 debug/release 构建+测试、Linux ASan+UBSan、
-headless 构建、以及 `core 分层守卫`（grep 确保 `physics2d_core` 不 include GLFW/ImGui/OpenGL）。
+> **Linux 上的 testbed 走 X11**：`cmake/Dependencies.cmake` 显式设置
+> `GLFW_BUILD_WAYLAND=OFF / GLFW_BUILD_X11=ON`（GLFW 3.4 默认还会编 Wayland 后端，需要
+> `wayland-scanner`/`libwayland-dev`；本项目不需要，因此少装一个依赖、configure 更确定）。
+> 若你确实要 Wayland，把这两行改回 `ON` 并安装 `libwayland-dev wayland-protocols` 即可。
+>
+> 非 MSVC 构建额外加 `-ffp-contract=off`（见 `cmake/CompilerWarnings.cmake`）：确定性回归的
+> 量化弱 hash 不能因为编译器把 `a*b+c` 融合成 FMA 而漂移，这保证 Linux CI 与 Windows 的
+> golden 可比。
+
+CI（`.github/workflows/ci.yml`）共 6 个 job：双平台 debug/release 构建+测试（4 个矩阵）、
+Linux ASan+UBSan、headless 构建+测试、determinism regression、`core 分层守卫`
+（grep 确保 `physics2d_core` 不 include GLFW/ImGui/OpenGL）与 clang-format（固定 23.1.3，
+与本机一致）。
 
 ## 4. 常用命令
 

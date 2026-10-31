@@ -84,6 +84,7 @@
 #include "physics2d/Core/Settings.h"
 #include "physics2d/Math/Vec2.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 

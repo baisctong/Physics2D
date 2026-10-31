@@ -21,6 +21,7 @@
 #include "physics2d/Math/Vec2.h"
 
 #include <cmath>
+#include <cstdint>
 
 namespace {
 
