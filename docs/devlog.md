@@ -789,13 +789,13 @@
      dev-interfaces §5 已登记（W8 发布后偏差）。
 
 **数据**
-- 首跑 run `41173670546`（sha `ad5c1b1`，9 条检查）：4 绿（clang-format / windows debug / windows
+- 首跑 run `41173670546`（9 条检查）：4 绿（clang-format / windows debug / windows
   release / layering）、5 红（ubuntu debug/release 的 configure=GLFW Wayland；headless/sanitize/
   regression 的 build=缺 include）。
-- 修复 commit `0dccdf3` 后第二次 run `41174026594`：configure/build 全部通过，Linux 只剩
+- 修复 portability 后第二次 run `41174026594`：configure/build 全部通过，Linux 只剩
   `regression_default`（跨 toolchain hash）；MSVC/Linux 其他所有测试全绿。
-- 拆 toolchain golden 后第三次 run `41174523124`（sha `a30db2e`）：**9/9 全绿**（Ubuntu/Windows
-  debug+release、ASan+UBSan、headless、determinism regression、clang-format、layering）。
+- 拆 toolchain golden 后 CI **9/9 全绿**：Ubuntu/Windows debug+release、ASan+UBSan、headless、
+  determinism regression、clang-format、layering。
 
 **给未来的提醒**
 1. 发布到 GitHub 前，先把"本地验证基线"当成必要条件而非充分条件：至少让 CI 在一个非本地编译器上

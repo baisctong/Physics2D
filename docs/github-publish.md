@@ -20,7 +20,7 @@
 | remote | ✅ 已添加 | `origin = https://github.com/baisctong/Physics2D.git` |
 | 推送 main + tags | ✅ **已完成** | 2026-10-31 推送；=`main`/`origin/main`、8 个 tag（含 v1.0-release）全部在远端 |
 | GitHub Release / About / topics | ✅ 已完成 | Release `v1.0-release`（正文含 4 张 GIF）；About description + 13 个 topics 已经 GitHub API 设置 |
-| CI 首跑 | ✅ 已全绿 | 首跑 9 条 4 绿 5 红（GCC include、GLFW Wayland、跨 toolchain golden）；两次修复后 **run `41174523124` 9/9 全绿**，见 §5 |
+| CI 首跑 | ✅ 已全绿 | 首跑 9 条 4 绿 5 红（GCC include、GLFW Wayland、跨 toolchain golden）；两次修复后 **CI 9/9 全绿**，见 §5 |
 
 ## 1. Git 身份（已完成，保留命令供参考）
 
@@ -102,7 +102,7 @@ CI badge 在第一次 workflow 运行完成后才会出状态；Release badge �
 
 ## 5. 首次推送后的 CI：首跑结果与修复（重要）
 
-首跑 run `41173670546`（sha `ad5c1b1`）：9 条检查 **4 绿 5 红** —— 绿的是 `clang-format`、`layering`、
+首跑 run `41173670546`：9 条检查 **4 绿 5 红** —— 绿的是 `clang-format`、`layering`、
 windows debug/release；红的是所有 Linux job。日志显示两个"本地 MSVC 全绿完全看不到"的问题：
 
 1. **GCC 编译失败：`include/physics2d/Core/BodyDef.h` 用了 `uint8_t` 却没有 `#include <cstdint>`**。
@@ -113,7 +113,7 @@ windows debug/release；红的是所有 Linux job。日志显示两个"本地 MS
    `GLFW_BUILD_X11=ON`；`docs/dev-setup.md` 记录该决策。
 3. 预防性：非 MSVC 编译器加 `-ffp-contract=off`，避免编译器把 `a*b+c` 融合成 FMA 导致跨平台回归漂移。
 
-修复 commit `0dccdf3` 后第二次 run（`41174026594`）：**所有编译/configure 通过**，Linux 只剩
+修复 portability 后第二次 run（`41174026594`）：**所有编译/configure 通过**，Linux 只剩
 `regression_default` 红：量化弱 hash 跨编译器不一致（MSVC `588d30e70f9b4ddd` vs GCC
 `001d846118f05125`；Linux debug/release/ASan 三个 job 结果一致，不是噪声）。根因：30 盒塔在默认
 8 迭代下坍塌、动力学混沌，把 libm/FMA 的末位差异放大到量子级——v1.0 文档里"量化弱 hash 跨编译器可
@@ -126,7 +126,7 @@ windows debug/release；红的是所有 Linux job。日志显示两个"本地 MS
 > 全部兑现了；修复本身也是很好的工程复盘素材（"我的项目第一次跨平台 CI 就抓到了 MSVC-only 的 include
 > 依赖和 FP 可移植性假设"）。
 >
-> **最终状态（2026-10-31）**：修复后第三次 run **`41174523124`（sha `a30db2e`）9/9 全绿**——
+> **最终状态（2026-10-31）**：修复后 GitHub Actions **9/9 全绿**——
 > Ubuntu/Windows debug+release、ASan+UBSan、headless、determinism regression、clang-format、layering
 > 全部通过；README 的 CI/Release badge 已生效。
 ## 6. 发布前最后自检（本次已全部通过）
