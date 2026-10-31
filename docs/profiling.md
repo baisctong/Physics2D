@@ -39,7 +39,7 @@
 | 编译器 | MSVC 19.44（VS2022 14.44.35207），`/W4 /permissive-`，项目代码 0 警告 |
 | 构建 | CMake 3.31.12 + Ninja 1.12.1，`RelWithDebInfo`（`-Preset release`；下文称 Release）、`-Preset debug`、`-Preset sanitize`（MSVC ASan，Debug） |
 | 电源 | 交流供电（Win32_Battery BatteryStatus = 2 = 接电），非电池模式 |
-| 测量会话 | 2026-10-30 20:28–20:41（UTC+8，两轮），仓库 `E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D` |
+| 测量会话 | 2026-10-30 20:28–20:41（UTC+8，两轮），仓库 `<repo-root>` |
 | 本次使用的构建目录 | `build/w8corerel`（release）、`build/w8core`（debug）、`build/w8core-san`（sanitize）——与 canonical `build/release\|debug\|sanitize` 同 preset、同源码 |
 
 ### 1.2 本次测量会话的并发情况（诚实记录）

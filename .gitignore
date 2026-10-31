@@ -26,6 +26,10 @@ third_party/_deps/
 # ---- local CMake user presets (machine specific) ----
 CMakeUserPresets.json
 
+# ---- cross-platform clutter ----
+.DS_Store
+Thumbs.db
+
 # ---- misc ----
 *.log
 *.tmp
@@ -34,3 +38,4 @@ CMakeUserPresets.json
 !assets/**/*.png
 !assets/**/*.gif
 !docs/**/*.gif
+*.ppm

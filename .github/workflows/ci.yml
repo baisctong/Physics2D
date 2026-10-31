@@ -1,9 +1,17 @@
 name: CI
 
+# Remote CI (GitHub Actions). The local equivalent of every job is documented in
+# docs/testing.md; the build/test matrix mirrors the three presets that define the
+# project's Definition of Done (debug, release, sanitize/headless).
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# Read-only by default: none of the jobs needs to write to the repository.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -19,6 +27,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-test:
     name: ${{ matrix.os }} / ${{ matrix.preset }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -57,7 +66,7 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
 
-      - name: Test
+      - name: Test (debug)
         run: ctest --preset all --output-on-failure
         if: matrix.preset == 'debug'
 
@@ -71,6 +80,7 @@ jobs:
   # ---------------------------------------------------------------------------
   sanitizers:
     name: sanitizers (ASan + UBSan)
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,11 +94,12 @@ jobs:
         run: ctest --preset sanitize --output-on-failure
 
   # ---------------------------------------------------------------------------
-  # Headless job: proves the physics core has no rendering dependency. Later it
-  # also runs the determinism regression tool (tests/regression, Week 6-7).
+  # Headless job: proves the physics core has no rendering dependency. It also
+  # runs the determinism regression tool via CTest (tests/regression).
   # ---------------------------------------------------------------------------
   headless:
     name: headless core (no render deps)
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -110,6 +121,7 @@ jobs:
   # ---------------------------------------------------------------------------
   regression:
     name: determinism regression (headless)
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -124,17 +136,24 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Format guard (Week 8 delivery): every first-party C++ file must match the
-  # committed .clang-format. This is a pure grep-style gate (no build), the
-  # counterpart of scripts/format.ps1 -Check on developer machines. clang-tidy
-  # stays out of v1.0 (no local LLVM toolchain); it is a v1.1 candidate.
+  # committed .clang-format. The version is pinned to the one this repository was
+  # formatted with (clang-format 23.1.3, installed from PyPI for reproducibility;
+  # distro packages ship an older major and may disagree on a few constructs).
+  # clang-tidy stays out of v1.0 (no local LLVM toolchain); it is a v1.1 candidate.
   # ---------------------------------------------------------------------------
   format:
     name: clang-format
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install clang-format
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-format
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned clang-format
+        run: |
+          python -m pip install --disable-pip-version-check --quiet clang-format==23.1.3
+          clang-format --version
       - name: Check formatting
         run: |
           set -euo pipefail
@@ -149,6 +168,7 @@ jobs:
   # ---------------------------------------------------------------------------
   layering:
     name: core layering guard
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

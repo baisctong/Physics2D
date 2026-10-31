@@ -56,7 +56,7 @@ flowchart TB
         SLEEPING -.->|"跳过 AABB 更新/窄相/求解<br/>保留 proxy 与上一帧 contact"| SLEEPING
     end
 
-    subgraph DATA[("World 持有的数据（阶段 9/10 写，阶段 2/3 读）")]
+    subgraph DATA["World 持有的数据（阶段 9/10 写，阶段 2/3 读）"]
         direction LR
         D1["m_bodies：槽位数组（slot == Handle.index，永不压实）"]
         D2["m_shapes：Shape tagged union"]
@@ -180,7 +180,7 @@ flowchart LR
 flowchart LR
     FT["frameTime（可变）"] --> SA["StepAccumulator::Advance()"]
     SA -->|"steps ∈ [0,5]"| WS["World::Step(dt=1/60) × N"]
-    SA -->|alpha ∈ [0,1)| RI["渲染插值（v1.1 可选，v1.0 未实现）"]
+    SA -->|"alpha ∈ [0,1)"| RI["渲染插值（v1.1 可选，v1.0 未实现）"]
 ```
 
 - 物理永远只看到 `kFixedTimeStep = 1/60`；warm starting 与 split impulse 的假设都依赖固定 dt。

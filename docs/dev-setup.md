@@ -134,7 +134,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/format.ps1
 | `Ninja not found` | 跑一次 `scripts/bootstrap.ps1`，或用 `vs2022-*` 预设 |
 | 把 Ninja 放进仓库 `tools/` 后报 `Permission denied` / `cl error D8050` | 本环境会限制"可执行文件位于工作区内部"的子进程写文件；Ninja 必须放在仓库外（VS 自带或 `%LOCALAPPDATA%`），`build.ps1` 已自动处理 |
 | configure 报 `cl.exe ... is not able to compile a simple test program` | 确认 VS 装了 C++ 工作负载；用 `build.ps1`（自动 import vcvars）而不是裸 `cmake`；清掉 `build/<preset>` 重试 |
-| 中文/空格路径 | 本机已验证 `E:\Big Fat Fish's Workstation\2D物理引擎项目\...` 可正常编译；若换到其它工具链报路径错误，建议放到纯 ASCII 路径 |
+| 中文/空格路径 | 本机已验证"含中文与空格"的仓库路径可正常编译；若换到其它工具链报路径错误，建议放到纯 ASCII 路径 |
 | testbed 启动失败、`--smoke` 返回 2 | 当前会话没有可用的 OpenGL 上下文（远程桌面/无显示 CI）。物理核心与单测不受影响；CI 只编译 testbed 不运行 |
 | 依赖下载失败 | 检查网络代理；或 `-DPHYSICS2D_OFFLINE=ON` 复用已有 `_deps` |
 | ctest 里 death tests 被 SKIP | 正常：death test 需要测试进程能写临时文件；本沙箱限制工作区内可执行文件的写入。CI（Linux/普通机器）会真正执行。把测试 exe 复制到工作区外运行即可看到它们通过 |

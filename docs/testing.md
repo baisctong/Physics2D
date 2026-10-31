@@ -1,7 +1,7 @@
 # 手动测试指南（Manual Testing Guide）
 
 > 面向两类读者：**人类用户**想亲手验收这个引擎；**换会话的新 AI** 需要知道怎么复现全部验证。
-> 所有命令在仓库根目录执行（`cd "E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D"`）。
+> 所有命令在仓库根目录执行（`cd "<repo-root>"`）。
 > 本机**已装 PowerShell 7（`pwsh` 7.6.9），但构建一律走 `powershell`（PS 5.1）**：`scripts/build.ps1`
 > 在 PS7 下会因 `$isWindows` 只读自动变量报错（尚未适配）；本文命令均按 PS 5.1 验证。
 >
@@ -14,7 +14,7 @@
 ## 0. 30 秒版（只想确认"项目是活的"）
 
 ```powershell
-cd "E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D"
+cd "<repo-root>"
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset debug -RunTests
 ```
 
@@ -367,7 +367,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/record_gifs.ps1 -Tes
 ## 附：命令速查（复制即用）
 
 ```powershell
-cd "E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D"
+cd "<repo-root>"
 
 # 构建 + 全部测试
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset debug -RunTests

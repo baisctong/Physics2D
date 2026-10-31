@@ -16,8 +16,8 @@
 > 4. 需要细节时再查 [`docs/architecture.md`](docs/architecture.md)、
 >    [`docs/math.md`](docs/math.md)、[`docs/profiling.md`](docs/profiling.md)、[`docs/devlog.md`](docs/devlog.md)
 >
-> 原始设计文档（仓库外）：`E:\Big Fat Fish's Workstation\2D物理引擎项目\2D物理引擎项目完整工作流与DeepSeek提示词库.md`
-> 仓库路径：`E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D`
+> 原始设计文档（仓库外）：`../2D物理引擎项目完整工作流与DeepSeek提示词库.md`
+> 仓库路径：`<repo-root>`
 > 当前 HEAD：`v1.0-release` 指向的提交（`git log -1` / `git describe --tags` 为准）。
 
 ---
@@ -37,7 +37,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 仓库路径 | `E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D` |
+| 仓库路径 | `<repo-root>` |
 | Git | `main` 分支，工作区干净，tags `v0.1-falling-ball` → … → `v0.7-island-sleep` → **`v1.0-release`** |
 | 构建目录 | `build/`（**可随时整个删除**，已被 gitignore；canonical `debug/release/sanitize` + 各 agent 并行目录） |
 | 团队状态 | 所有 teammate 为 inactive；无后台任务；W8 任务卡（task-1..6）均 completed |
@@ -58,6 +58,7 @@
 | `docs/demos.md` | **新**：8 个 demo 一览、操作键、4 个 DebugUI 面板、GIF 清单与录制命令 |
 | `docs/resume-interview.md` | **新**：简历 bullet（带实测数字）+ 25 问四段式 + 20 分钟讲解脚本 + 数字速查 |
 | `docs/release-notes-v1.0.md` | **新**：v1.0-release 发布说明（GitHub Release 草稿） |
+| `docs/github-publish.md` | **新**：推送到 GitHub 的检查清单（仓库体检、Git 身份重写、remote/tags、Release/About/badges、CI 首跑注意） |
 | `docs/testing.md` | **手动测试指南**：30 秒版 / 全量验收 / 单测过滤 / 10 分钟人工验收脚本 / smoke / bench / 回归 / death tests / GIF 录制 / FAQ / 验收清单 |
 | `docs/dev-setup.md` | 环境、构建、测试台操作、疑难杂症（含本机增量构建坑与自动防护） |
 | `docs/devlog.md` | W1-W8 周报：完成/卡住/数据/下周/提醒（面试素材来源；W8 章含"多 agent 文档数字漂移"复盘） |
@@ -78,7 +79,7 @@
 > 首次 configure 会联网 FetchContent 下载依赖（1-2 分钟）。命令必须在仓库根目录执行。
 
 ```powershell
-cd "E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D"
+cd "<repo-root>"
 
 # 全量：配置 + 编译 + ctest（幂等；Windows 上若检测到 header 比 obj 新会自动 clean-first）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset debug -RunTests
@@ -407,7 +408,7 @@ docs/  scripts/                       W8 新增 docs/images/*.gif、scripts/reco
 ### 9.3 任务卡模板（复制即可）
 
 ```text
-仓库：E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D
+仓库：<repo-root>
 目标：<主题>，对应设计文档第 X 周 / PXX。
 交付文件（只允许改/建这些）：<清单>
 实现要求：<公式/语义/边界/错误处理>
@@ -429,7 +430,7 @@ v1.1 的 block solver 建议 single-agent 串行做（跨求解器/测试/文档
 > 说明见 [`docs/testing.md`](docs/testing.md)。下面是最高频的几条。
 
 ```powershell
-cd "E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D"
+cd "<repo-root>"
 
 # 构建 + 测试（日常；Windows 上 header 比 obj 新会自动 clean-first）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Preset debug -RunTests
@@ -477,7 +478,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/record_gifs.ps1
 ## 11. 新会话开场提示词（直接复制粘贴）
 
 > 你是 Physics2D 项目的接手开发者。请先读
-> `E:\Big Fat Fish's Workstation\2D物理引擎项目\Physics2D\HANDOFF.md`、
+> `<repo-root>\HANDOFF.md`、
 > 同目录 `AGENTS.md`、`docs/ROADMAP.md`、`docs/dev-interfaces.md`、`docs/testing.md`、
 > `docs/profiling.md`、`docs/boundary-contracts.md`，
 > 再按 `HANDOFF.md` §2 跑验证基线（预期 debug 387 / release 390 / sanitize 387 个 ctest 全绿、

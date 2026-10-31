@@ -1,0 +1,20 @@
+# Git attributes: keep the repository line-ending-neutral across Windows/Linux dev
+# machines and GitHub's checkout of this repository (Chinese-locale MSVC + CRLF churn
+# is one of this project's documented pitfalls; text=auto normalises on commit).
+* text=auto
+
+# Binary assets: never diff/convert them (the README GIFs are already palette-optimised).
+*.gif binary
+*.png binary
+*.jpg binary
+*.ppm binary
+
+# Windows entry points keep CRLF so a plain double-click / older editors behave.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# POSIX scripts and CI stay LF.
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
