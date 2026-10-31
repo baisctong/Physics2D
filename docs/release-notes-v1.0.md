@@ -46,10 +46,10 @@
   岛屿/休眠状态、接触法线/穿透/累计冲量柱状条与摩擦锥占用、Space 暂停 / `.` 单步 / 1-2-3 慢放。
   W8 新增确定性帧捕获（`--capture-dir`，PPM→Pillow）→ **5 个 GIF** 一条命令可复现
   （`scripts/record_gifs.ps1`，总计 1.69 MB）。
-- **文档与面试材料**：架构总图（模块依赖 + Step 时序 + 岛屿/休眠状态机 + 数据所有权）、
+- **文档与展示材料**：架构总图（模块依赖 + Step 时序 + 岛屿/休眠状态机 + 数据所有权）、
   `docs/math.md` 逐步推导、`docs/profiling.md` 全量实测表与测量纪律、
   `docs/boundary-contracts.md` 边界契约、`docs/demos.md` 演示/操作/录制指南、
-  `docs/resume-interview.md` 简历 bullet + 25 问 + 20 分钟脚本；README 中英双语。
+  README 中英双语。
 
 ## v1.0 的边界（诚实清单）
 
@@ -92,5 +92,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/record_gifs.ps1
 
 - 架构：[`architecture.md`](architecture.md) · 数学推导：[`math.md`](math.md) ·
   性能：[`profiling.md`](profiling.md) · 边界契约：[`boundary-contracts.md`](boundary-contracts.md) ·
-  演示与录制：[`demos.md`](demos.md) · 简历/面试：[`resume-interview.md`](resume-interview.md) ·
+  演示与录制：[`demos.md`](demos.md) ·
   开发日志：[`devlog.md`](devlog.md) · 交接：[`../HANDOFF.md`](../HANDOFF.md)

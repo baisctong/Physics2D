@@ -10,7 +10,7 @@
 
 ## 0. 项目是什么
 
-`Physics2D`：从零手写的 C++20 2D 刚体物理引擎，用于校招简历与面试深挖。
+`Physics2D`：从零手写的 C++20 2D 刚体物理引擎。
 评价标准是「**链路完整 + 原理正确 + 有量化数据 + 代码可读可讲**」，不是功能多。
 设计文档原文在仓库外：`../2D物理引擎项目完整工作流与DeepSeek提示词库.md`（第 5 章按周执行，第 12 章提示词库）。
 
@@ -19,7 +19,7 @@
 **10 方块堆叠 10 秒稳定里程碑**、**BruteForce + SAP 可插拔宽相（2000 物体 7.70x）**、
 **岛屿分区 + 按岛求解（三模式逐位一致）+ 整岛原子休眠（500 物体休眠后 1.74x）**、
 **headless 确定性回归（量化 hash + golden + CI job）**、Testbed 8 个 demo 与完整调试面板；
-**W8 交付完整文档（math/profiling/architecture/boundary-contracts/demos/resume-interview）、
+**W8 交付完整文档（math/profiling/architecture/boundary-contracts/demos）、
 README 中英双语、5 张 GIF、35 个边界测试、CI clang-format job**）。
 **v1.0 之后物理与公共 API 冻结**；下一轮 v1.1 见 `HANDOFF.md` §5（首位：2 点接触 2×2 block solver）。
 详见 `docs/ROADMAP.md` 与 `docs/devlog.md`。

@@ -1,6 +1,6 @@
 # Devlog 开发日志
 
-> 每周 5 行以内的周报（模板见设计文档 W04）。重点写「卡住的地方」——那是面试时最有价值的部分。
+> 每周 5 行以内的周报（模板见设计文档 W04）。重点写「卡住的地方」——那是复盘时最有价值的部分。
 > 数字必须来自实测，标注测量条件。
 
 ---
@@ -631,7 +631,7 @@
    推导）、架构总图升级；
 2. README 完整版 + GIF（10 盒稳定 / 2000 物体 SAP / 500 物体休眠 / 多米诺唤醒）+ 已知限制清单；
 3. 边界测试补强（退化多边形、零密度、极大速度、超长薄条）与所有崩溃点 assert/文档；
-4. 简历 bullet（10.3 模板）与面试问答演练（10.4 清单）；tag `v1.0-release`；
+4. 对外文档与演示材料整理；tag `v1.0-release`；
 5. 若时间允许：**2 点接触 2×2 block solver**（能消除薄片残余抖动 → 休眠更快，W7 卡点 3 的正解）、
    `BodySim`/`BodyState` 冷热拆分（W4→W5→W6→W7→W8 顺延；W7 的测量表明"打包"本身在 400 体内不划算，
    拆分应先有 profiling 数据再动）、Tracy 正式接入。
@@ -649,13 +649,12 @@
 ## Week 8 · 文档、交付与 v1.0-release
 
 **完成**
-- **文档交付（6 个新文档 + 4 处升级）**：`docs/math.md`（9 节逐步推导 + 每节「面试可能怎么问」+
+- **文档交付（6 个新文档 + 4 处升级）**：`docs/math.md`（9 节逐步推导 + 每节延伸思考 +
   §10 边界契约表 + 常数附录，~1040 行）、`docs/profiling.md`（宽相/休眠/三求解模式/构建耗时/8 demo
   smoke 全量实测表 + 测量纪律 + §1.5 Phase C canonical 复测，~500 行）、`docs/architecture.md` 升级
   （§0 一张图总览、§3.7 数据所有权图、§4.6 Step 11 阶段时序图、§4.7 岛屿/休眠状态机，共 6 张 Mermaid）、
   `docs/boundary-contracts.md`（三类契约 + 50 行边界场景表 + 13 条已知限制，73 个测试名逐条机械核对）、
-  `docs/demos.md`（8 demo/操作键/4 面板/录制命令/录屏坑）、`docs/resume-interview.md`（6 条简历 bullet +
-  25 问四段式 + 5 个专项深挖 + 20 分钟讲解脚本 + 数字速查）；README 重写为 v1.0 结构（GIF 墙/核心算法/
+  `docs/demos.md`（8 demo/操作键/4 面板/录制命令/录屏坑）；README 重写为 v1.0 结构（GIF 墙/核心算法/
   实测性能/已知限制/Roadmap/文档地图）+ 新增 `README.en.md` 英文版 + `docs/release-notes-v1.0.md`。
 - **GIF（W8 新增 testbed 帧捕获）**：`--capture-dir/--capture-every/--capture-start/--capture-hide-ui/
   --capture-display`，在 world+ImGui 画完后、`glfwSwapBuffers` 前 `glReadPixels(GL_BACK, GL_RGB)` →

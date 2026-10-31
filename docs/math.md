@@ -157,7 +157,7 @@ dt 突变会让继承的冲量与新的速度目标不匹配；(b) split impulse
 > **实测（`docs/devlog.md` W1）**：自由落体与解析解一致；W7 的 10 盒塔在 600 步（10 s）内
 > 顶层 y = 9.47813 m（起始 9.5 m，2.2 cm = 10 个接触的 slop 累积），最大穿透 5.223 mm。
 
-### 1.5 面试可能怎么问
+### 1.5 延伸思考
 
 1. **"为什么用半隐式 Euler？显式 Euler 差在哪？"**
    答：显式 Euler 对振荡系统的放大矩阵行列式 `1 + dt²ω² > 1`，能量单调增长；半隐式（symplectic）
@@ -272,7 +272,7 @@ n_out = Normalize( (e.y, −e.x) )        ← 代码：Vec2{v[next].y − v[i].y
 返回 `(0,0)`，形状看似有效、实际所有 SAT 轴失效（见 §10，测试
 `test_boundary_solver.cpp::BoundaryPolygon.FiniteButOverflowingCoordinatesAreRejected`）。
 
-### 2.6 面试可能怎么问
+### 2.6 延伸思考
 
 1. **"多边形惯性矩为什么可以用鞋带公式？"**
    答：把多边形分解成以原点为公共顶点的有向三角形，对每个三角形用格林公式
@@ -408,7 +408,7 @@ factor 0 → step 258 塌、0.5 → 314、0.85 → 259、0.90 → 283、0.95 →
 > 与 `warmStartFactor=0` 两种配置在休眠冻结冲量后会出现 −0/+0 的位级差异。
 > 这是"看似多余的 +0 其实承载契约"的典型例子。
 
-### 3.6 面试可能怎么问
+### 3.6 延伸思考
 
 1. **"K_n 是怎么来的？为什么要 `Cross(r,n)²`？"**
    答：冲量在锚点产生线速度 `J/m` 和角速度 `r×J/I`；角速度再通过杠杆臂贡献回锚点速度，
@@ -488,7 +488,7 @@ restitution = max(eA, eB)        （更"弹"的表面主导）
   `tangentImpulse` 恒 0。
 - 单点手算：`v=(3,2), n=(0,1), μ=0.5` → `accN = 2, accT = −1`（正好落在锥边界）。
 
-### 4.5 面试可能怎么问
+### 4.5 延伸思考
 
 1. **"摩擦为什么钳累计值而不是单次增量？"**
    答：PGS 的解是可行域上的投影，累计值代表"该点已给的总冲量"；钳增量会让累计值漂出锥，
@@ -535,7 +535,7 @@ bias = e · vn0                        if  vn0 < −restitutionThreshold
 - 10 盒塔 10 s 站立：所有接触的接近速度都低于阈值，restitution 不参与，稳定性只靠摩擦 +
   warm starting + split impulse（W5 三级归因）。
 
-### 5.4 面试可能怎么问
+### 5.4 延伸思考
 
 1. **"restitution 的 bias 为什么用初始接近速度？"**
    答：弹性碰撞的物理量是碰撞前后的速度比；只有"碰撞时刻"的接近速度有意义。放到迭代里会让
@@ -638,7 +638,7 @@ pseudoLinearVelocity = pseudoAngularVelocity = 0
 实测：10 盒塔 600 步 max penetration **5.223 mm**（< 10 mm 验收线）、顶层 y 9.47813 m、
 最大倾斜 0.004596 rad、末秒抖动 0.0248 m/s；`BoxStack` smoke 3.893 mm。
 
-### 6.5 面试可能怎么问
+### 6.5 延伸思考
 
 1. **"Baumgarte 的问题是什么？split impulse 怎么解决？"**
    答：Baumgarte 把穿透转成速度 bias，修正量进了真实速度 → 注入能量（静止接触抖动/高速弹过头）。
@@ -753,7 +753,7 @@ maxPen 0.00280 vs 0.00333 m——cache 只降特征抖动、不改物理。
 作为接触点——这是 `BoxStack` 塔能稳住的关键（2 点支撑 vs 1 点支撑）。
 圆-多边形按最近边/顶点 Voronoi 区域分类（P06）。
 
-### 7.6 面试可能怎么问
+### 7.6 延伸思考
 
 1. **"2D SAT 为什么不需要叉积轴？"**
    答：3D 中两个面片的分离方向可以是两边方向的叉积；2D 中"面片"退化成线段，分离轴必垂直于
@@ -839,7 +839,7 @@ SAP 只按 x 轴排序。一整列垂直堆叠的盒子 x 区间**几乎完全�
 小 N 反转：SAP 的排序/维护常数在 N 小时不如 O(N²) 直接枚举，实测交叉点 **N ≈ 25–32**
 （N=20 时 SAP 只有 0.80x），所以 testbed 的 Auto 宽相阈值取 **32**（实测来源，不是抄经验值）。
 
-### 8.5 面试可能怎么问
+### 8.5 延伸思考
 
 1. **"SAP 为什么比 BruteForce 快？复杂度差多少？"**
    答：BruteForce 每帧 O(N²)；SAP 首帧 O(N log N) 排序、稳态利用帧间相干性近似 O(N+K)，
@@ -929,7 +929,7 @@ World 级 grouped vs flat 300 步 × 469 floats/步逐位一致；回归弱 hash
 - **唤醒入口**：`ApplyLinearImpulse` / `SetLinearVelocity` / `SetTransform` / `ApplyForce` 均立即整岛唤醒；
   邻近唤醒（探针进入休眠塔的 fat AABB 但无几何接触）同样整岛唤醒，宽相 on/off 两条路径都验证。
 
-### 9.5 面试可能怎么问
+### 9.5 延伸思考
 
 1. **"岛屿怎么划分？为什么 static body 不传递连通性？"**
    答：dynamic body 是节点、dynamic-dynamic contact 是边，连通分量即岛；static/kinematic 是边界。

@@ -203,7 +203,7 @@
   休眠阈值不调大（sleep onset 859 步如实记录）、Dominoes 用 0.30×1.0 m 宽牌、R15 冷热拆分顺延到 W8
   （全部登记在 `docs/dev-interfaces.md` 第 5 节）。
 
-## Week 8 · 文档、简历、面试准备 ✅
+## Week 8 · 文档与交付准备 ✅
 
 | 日 | 任务 | DoD | 状态 |
 | --- | --- | --- | --- |
@@ -212,7 +212,7 @@
 | D3 | `docs/profiling.md` | 性能表 + 环境 | ✅ |
 | D4 | README 完整版 | 陌生人 5 分钟能跑 | ✅ |
 | D5 | 已知限制 + 边界测试 | 崩溃点都有 assert/文档 | ✅ |
-| D6 | 简历 bullet + 面试演练 | 能闭卷讲 20 分钟 | ✅ |
+| D6 | 对外展示材料 + 演示脚本 | 演示可复现 | ✅ |
 | D7 | tag `v1.0-release` + Release | — | ✅ |
 
 要填：R11 Tracy 完整接入（如时间允许）、R15 冷热拆分（**只有拿到 profiling 数据证明 body 内存布局是热点才做**；
@@ -220,13 +220,12 @@ W7 实测"岛内打包"在 400 体规模反而更慢，说明该规模下 body �
 2 点接触 2×2 block solver（消除薄片残余抖动 → 更快入睡，W7 卡点 3 的正解）、W01-W04 文档提示词。
 
 **Week 8 验收结果（2026-10-30，tag `v1.0-release`）**
-- **文档（全部落盘并交叉链接）**：`docs/math.md`（9 节逐步推导 + 每节面试追问 + §10 边界契约表，~1040 行）；
+- **文档（全部落盘并交叉链接）**：`docs/math.md`（9 节逐步推导 + §10 边界契约表，~1040 行）；
   `docs/profiling.md`（宽相/休眠/三求解模式/构建耗时/8 demo smoke 全量实测 + 测量纪律 +
   §1.5 Phase C canonical 复测，~500 行）；`docs/architecture.md` 升级（§0 一张图总览、§3.7 数据所有权图、
   §4.6 Step 11 阶段时序图、§4.7 岛屿/休眠状态机，共 6 张 Mermaid）；`docs/boundary-contracts.md`
   （三类契约 + 50 行边界场景表 + 13 条已知限制，73 个测试名逐条机械核对）；`docs/demos.md`（8 demo/操作键/
-  4 面板/GIF 录制）；`docs/resume-interview.md`（6 条简历 bullet + 25 问四段式 + 5 个专项深挖 + 20 分钟讲解
-  + 数字速查）；README 重写为 v1.0 结构 + `README.en.md` 英文版 + `docs/release-notes-v1.0.md`；
+  4 面板/GIF 录制）；README 重写为 v1.0 结构 + `README.en.md` 英文版 + `docs/release-notes-v1.0.md`；
   AGENTS/HANDOFF/ROADMAP/dev-interfaces/devlog/testing 全部更新到 v1.0。
 - **GIF**：testbed 新增确定性帧捕获（`--capture-dir/--capture-every/--capture-start/--capture-hide-ui/
   --capture-display`，`glReadPixels(GL_BACK)` → PPM P6，默认关闭零开销）+ `scripts/record_gifs.ps1`

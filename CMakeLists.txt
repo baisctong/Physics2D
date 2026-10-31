@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(Physics2D
     VERSION 0.1.0
-    DESCRIPTION "A hand-written 2D rigid body physics engine (learning/resume project)"
+    DESCRIPTION "A hand-written 2D rigid body physics engine (learning project)"
     LANGUAGES CXX)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")

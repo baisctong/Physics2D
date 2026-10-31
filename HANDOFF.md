@@ -2,7 +2,7 @@
 
 > **一句话现状**：**Week 1-8 全部完成，tag `v1.0-release`**。完整物理链路（宽相 → 窄相 → SAT/裁剪
 > Manifold → Sequential Impulse（摩擦锥/warm starting/split impulse）→ 岛屿/整岛休眠）、可交互
-> testbed（8 demo + 帧捕获 GIF）、完整文档（架构/数学/性能/边界契约/演示/简历面试）、确定性回归与
+> testbed（8 demo + 帧捕获 GIF）、完整文档（架构/数学/性能/边界契约/演示）、确定性回归与
 > 边界契约测试全部交付。**canonical clean 验收：debug 387 / release 390 / sanitize 387 个 ctest
 > 全绿、0 项目警告、回归弱 hash（MSVC `588d30e70f9b4ddd` / GCC·Linux `001d846118f05125`，同一 toolchain 内）不变、8 demo smoke 全 exit 0、宽相 A/B
 > SHA-256 三路相同、工作区外 386/386 gtest（31 death test 真跑）**。
@@ -52,16 +52,15 @@
 | `docs/ROADMAP.md` | 8 周计划、每周 DoD、W1-W8 验收记录 |
 | `docs/dev-interfaces.md` | 18 条预留接口状态、**偏差登记（重要）**、W5/W6/W7 不变量 |
 | `docs/architecture.md` | W8 升级版：一张图总览 + 模块依赖 + 数据布局/所有权 + Step 11 阶段时序 + 岛屿/休眠状态机 + 宽相/窄相/求解数据流（6 张 Mermaid） |
-| `docs/math.md` | **新**：SAT/冲量/摩擦锥/warm starting/split impulse/岛屿休眠逐步推导 + 每节面试追问 + §10 边界契约与已知限制 |
+| `docs/math.md` | **新**：SAT/冲量/摩擦锥/warm starting/split impulse/岛屿休眠逐步推导 + §10 边界契约与已知限制 |
 | `docs/profiling.md` | **新**：全部实测性能表（宽相/休眠/三求解模式/构建耗时/8 demo smoke）+ 测量环境与纪律 + §1.5 Phase C canonical 复测；**性能数字的唯一事实来源** |
 | `docs/boundary-contracts.md` | **新**：边界场景契约表（Debug assert / 返回值 / 文档化限制）+ 13 条已知限制 + 新增测试索引 |
 | `docs/demos.md` | **新**：8 个 demo 一览、操作键、4 个 DebugUI 面板、GIF 清单与录制命令 |
-| `docs/resume-interview.md` | **新**：简历 bullet（带实测数字）+ 25 问四段式 + 20 分钟讲解脚本 + 数字速查 |
 | `docs/release-notes-v1.0.md` | **新**：v1.0-release 发布说明（GitHub Release 草稿） |
 | `docs/github-publish.md` | **新**：推送到 GitHub 的检查清单（仓库体检、Git 身份重写、remote/tags、Release/About/badges、CI 首跑注意） |
 | `docs/testing.md` | **手动测试指南**：30 秒版 / 全量验收 / 单测过滤 / 10 分钟人工验收脚本 / smoke / bench / 回归 / death tests / GIF 录制 / FAQ / 验收清单 |
 | `docs/dev-setup.md` | 环境、构建、测试台操作、疑难杂症（含本机增量构建坑与自动防护） |
-| `docs/devlog.md` | W1-W8 周报：完成/卡住/数据/下周/提醒（面试素材来源；W8 章含"多 agent 文档数字漂移"复盘） |
+| `docs/devlog.md` | W1-W8 周报：完成/卡住/数据/下周/提醒（含所有卡点与修复复盘；W8 章含"多 agent 文档数字漂移"复盘） |
 | `docs/images/` | 5 张 README GIF（每张 ≤600KB，总计 1,692.6 KB；由 `scripts/record_gifs.ps1` 生成） |
 | `README.md` / `README.en.md` | 对外展示（v1.0 特性/GIF 墙/快速开始/架构/核心算法/真实性能表/Demos/已知限制/Roadmap） |
 | `HANDOFF.md` | 本文件：换会话交接 |
@@ -178,7 +177,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/record_gifs.ps1
 | W5 | 摩擦锥 + warm starting + split impulse | `ContactSolver` 摩擦/warm start/Baumgarte 基线；`ContactSolverPosition.cpp` 伪速度层；DebugUI 4 面板 + FrictionRamp | **10 盒 10 s 稳定（穿透 5.223mm）** |
 | W6 | BruteForce + SAP 宽相 + 量化 + 回归 | 双宽相实现、World 接线 + fat AABB + pair 规范化、`bench_broadphase`、`physics2d_regression` + golden + CI job、Pyramid200/StressBenchmark | **2000 物体 SAP 7.70x**；切宽相物理**逐位不变** |
 | W7 | 岛屿 + 按岛求解 + 整岛休眠 | `Solver/Island.{h,cpp}`（显式栈 DFS/规范序）、`ContactSolver` 三模式按岛求解、`World::BuildIslands/UpdateSleep/WakeIslandOfBody`、Dominoes/IslandSleep500、单步/慢放、Contact 冲量柱状条 | 354 测试；三求解模式 21,760 float 0 差异；休眠 **1.74x**；多米诺 20/20 无跳过；回归 hash 不变 |
-| W8 | 文档与交付（v1.0-release） | `docs/{math,profiling,boundary-contracts,demos,resume-interview}.md` + `architecture` 升级 + README v1.0/英文版 + release notes；testbed 确定性帧捕获 + `scripts/record_gifs.ps1` + 5 GIF；**35 个边界测试 + 4 处契约硬化**；CI clang-format job | **387/390/387 测试全绿、0 警告**；boundary/death 386/386；hash 不变；宽相 **7.70x**；5 GIF 共 1.69MB |
+| W8 | 文档与交付（v1.0-release） | `docs/{math,profiling,boundary-contracts,demos}.md` + `architecture` 升级 + README v1.0/英文版 + release notes；testbed 确定性帧捕获 + `scripts/record_gifs.ps1` + 5 GIF；**35 个边界测试 + 4 处契约硬化**；CI clang-format job | **387/390/387 测试全绿、0 警告**；boundary/death 386/386；hash 不变；宽相 **7.70x**；5 GIF 共 1.69MB |
 
 **模块 → 文件**（只列关键入口，完整用 `git ls-files`）：
 
@@ -389,7 +388,7 @@ docs/  scripts/                       W8 新增 docs/images/*.gif、scripts/reco
   W5 摩擦/warm start/split impulse、W6 SAP+bench、W7 岛屿 DFS+三模式位级一致、W8 math.md+边界测试）、
   `core-dev`（World/集成测试/回归/量化：W5 稳定性证据、W6 三路等价、W7 休眠/唤醒/岛屿集成、
   W8 profiling.md + Core 边界测试）、`testbed-dev`（UI/demo/录制：W5 面板、W6 场景、W7 Dominoes/
-  IslandSleep500/单步慢放、W8 帧捕获 + 5 GIF + demos.md）、`docs-dev`（W8 新增：resume-interview.md、
+  IslandSleep500/单步慢放、W8 帧捕获 + 5 GIF + demos.md）、`docs-dev`（W8 新增：
   README.en.md、boundary-contracts.md）。
   换会话时它们仍存在但 inactive；用 `send_message` 唤醒（`list_agents` 查看目标名）。
   注意：teammate 的上下文**不带**本会话的记忆，任务卡必须自包含；它们已完成的交付物在仓库里。
@@ -501,7 +500,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/record_gifs.ps1
 - [x] 回归弱 hash **`588d30e70f9b4ddd`（MSVC）/ `001d846118f05125`（GCC·Linux）** 不变、exit 0；宽相 A/B 三场景 SHA-256 三路相同
 - [x] `scripts/format.ps1 -Check` 117 文件 OK；CI 新增 clang-format job
 - [x] 文档：`docs/math.md`、`docs/profiling.md`、`docs/boundary-contracts.md`、`docs/demos.md`、
-      `docs/resume-interview.md`、`docs/release-notes-v1.0.md`、README v1.0 + `README.en.md` 全部落盘，
+      `docs/release-notes-v1.0.md`、README v1.0 + `README.en.md` 全部落盘，
       architecture/ROADMAP/dev-interfaces/devlog/testing/AGENTS/HANDOFF 更新到 v1.0
 - [x] GIF：5 张（总计 1,692.6 KB，单张 ≤600KB），`scripts/record_gifs.ps1` 一条命令可复现
 - [x] 边界契约：35 个新测试 + 4 处契约硬化（只影响非法输入/Debug 校验，hash 不变）
